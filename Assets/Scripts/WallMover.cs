@@ -49,7 +49,7 @@ public class WallMover : MonoBehaviour
             }
             else
             {
-                Debug.Log("❌ 失敗...");
+                gameManager.Fail();
             }
         }
     }

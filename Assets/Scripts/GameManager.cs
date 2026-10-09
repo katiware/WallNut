@@ -9,6 +9,11 @@ public class GameManager : MonoBehaviour
     public float spawnInterval = 3f;
     public Vector3 spawnPosition = new Vector3(0, 1, 15); // Z=15（奥）から壁を出す
     
+    [Header("演出（エフェクト・サウンド）")]
+    public AudioClip successSE;
+    public AudioClip failSE;
+    public ParticleSystem successParticle;
+    private AudioSource audioSource;
     private float timer = 0f;
     private int score = 0;
 
@@ -16,6 +21,9 @@ public class GameManager : MonoBehaviour
     {
         // タイトル画面で設定された難易度（出現間隔）を適用
         spawnInterval = GameSettings.wallSpawnInterval;
+
+        // 音を鳴らすためのコンポーネントをアタッチ
+        audioSource = gameObject.AddComponent<AudioSource>();
     }
 
     void Update()
@@ -58,6 +66,18 @@ public class GameManager : MonoBehaviour
         {
             scoreText.text = $"Score: {score}";
         }
+
+        // 成功時の演出
+        if (audioSource != null && successSE != null) audioSource.PlayOneShot(successSE);
+        if (successParticle != null) successParticle.Play();
+
         Debug.Log($"現在の成功回数: {score}回！");
+    }
+
+    public void Fail()
+    {
+        // 失敗時の演出
+        if (audioSource != null && failSE != null) audioSource.PlayOneShot(failSE);
+        Debug.Log("❌ 失敗...");
     }
 }
