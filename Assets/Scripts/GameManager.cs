@@ -1,9 +1,11 @@
 using UnityEngine;
+using TMPro;
 
 public class GameManager : MonoBehaviour
 {
     [Tooltip("ランダムに出現させる壁のプレハブをここに入れます")]
     public GameObject[] wallPrefabs; 
+    public TextMeshProUGUI scoreText; // スコア表示用のUIテキスト
     public float spawnInterval = 3f;
     public Vector3 spawnPosition = new Vector3(0, 1, 15); // Z=15（奥）から壁を出す
     
@@ -46,6 +48,10 @@ public class GameManager : MonoBehaviour
     public void AddScore()
     {
         score++;
+        if (scoreText != null) 
+        {
+            scoreText.text = $"Score: {score}";
+        }
         Debug.Log($"現在の成功回数: {score}回！");
     }
 }
