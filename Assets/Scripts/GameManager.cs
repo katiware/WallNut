@@ -14,8 +14,16 @@ public class GameManager : MonoBehaviour
     public AudioClip failSE;
     public ParticleSystem successParticle;
     private AudioSource audioSource;
+    [Header("ゲームルール")]
+    public int maxWalls = 10;
+    public TextMeshProUGUI comboText;
+    public GameObject resultPanel;
+    
     private float timer = 0f;
     private int score = 0;
+    private int combo = 0;
+    private int spawnedWallsCount = 0;
+    private bool isGameClear = false;
 
     void Start()
     {
@@ -28,13 +36,20 @@ public class GameManager : MonoBehaviour
 
     void Update()
     {
+        if (isGameClear) return;
         if (wallPrefabs == null || wallPrefabs.Length == 0) return;
 
         timer += Time.deltaTime;
-        if (timer >= spawnInterval)
+        if (timer >= spawnInterval && spawnedWallsCount < maxWalls)
         {
             SpawnWall();
             timer = 0f;
+        }
+
+        // 全ての壁を出し切り、画面上から壁がなくなったらクリア
+        if (spawnedWallsCount >= maxWalls && FindObjectOfType<WallMover>() == null)
+        {
+            GameClear();
         }
     }
 
@@ -43,6 +58,7 @@ public class GameManager : MonoBehaviour
         // ランダムな壁プレハブを選ぶ
         int randomIndex = Random.Range(0, wallPrefabs.Length);
         GameObject newWall = Instantiate(wallPrefabs[randomIndex], spawnPosition, Quaternion.identity);
+        spawnedWallsCount++;
         
         // テスト用：壁の色を正解のポーズの色に合わせる（0=白, 1=赤, 2=青）
         WallMover mover = newWall.GetComponent<WallMover>();
@@ -61,10 +77,16 @@ public class GameManager : MonoBehaviour
 
     public void AddScore()
     {
-        score++;
+        combo++;
+        score += combo; // コンボ数分だけスコア加算
+        
         if (scoreText != null) 
         {
             scoreText.text = $"Score: {score}";
+        }
+        if (comboText != null)
+        {
+            comboText.text = $"{combo} COMBO!";
         }
 
         // 成功時の演出
@@ -77,7 +99,17 @@ public class GameManager : MonoBehaviour
     public void Fail()
     {
         // 失敗時の演出
+        combo = 0;
+        if (comboText != null) comboText.text = "";
+
         if (audioSource != null && failSE != null) audioSource.PlayOneShot(failSE);
         Debug.Log("❌ 失敗...");
+    }
+
+    void GameClear()
+    {
+        isGameClear = true;
+        if (resultPanel != null) resultPanel.SetActive(true);
+        Debug.Log($"ゲームクリア！ 最終スコア: {score}");
     }
 }
