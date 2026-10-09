@@ -12,6 +12,12 @@ public class GameManager : MonoBehaviour
     private float timer = 0f;
     private int score = 0;
 
+    void Start()
+    {
+        // タイトル画面で設定された難易度（出現間隔）を適用
+        spawnInterval = GameSettings.wallSpawnInterval;
+    }
+
     void Update()
     {
         if (wallPrefabs == null || wallPrefabs.Length == 0) return;

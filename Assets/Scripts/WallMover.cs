@@ -14,6 +14,9 @@ public class WallMover : MonoBehaviour
     {
         player = FindObjectOfType<PlayerDummy>();
         gameManager = FindObjectOfType<GameManager>();
+
+        // タイトル画面で設定された難易度（壁の速度）を適用
+        speed = GameSettings.wallSpeed;
     }
 
     void Update()
