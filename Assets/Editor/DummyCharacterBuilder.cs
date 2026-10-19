@@ -49,6 +49,23 @@ public class DummyCharacterBuilder : EditorWindow
         GameObject lFoot = CreateBone("LeftFootBone", lHip.transform, new Vector3(0, -0.7f, 0), PrimitiveType.Cube, new Vector3(0, -0.05f, 0.1f), new Vector3(0.15f, 0.1f, 0.25f));
         GameObject rFoot = CreateBone("RightFootBone", rHip.transform, new Vector3(0, -0.7f, 0), PrimitiveType.Cube, new Vector3(0, -0.05f, 0.1f), new Vector3(0.15f, 0.1f, 0.25f));
 
+        // --- 6. ポーズ自動判定（PlayerDummy）をアタッチ ---
+        PlayerDummy dummyController = root.AddComponent<PlayerDummy>();
+        dummyController.headBone = head.transform;
+        dummyController.spine = spine.transform;
+        dummyController.leftArmBone = lArm.transform;
+        dummyController.rightArmBone = rArm.transform;
+        dummyController.leftFootBone = lFoot.transform;
+        dummyController.rightFootBone = rFoot.transform;
+
+        // シーン内の古い仮Playerオブジェクト（Cube）があれば削除して重複を解消
+        GameObject legacyPlayer = GameObject.Find("Player");
+        if (legacyPlayer != null && legacyPlayer != root)
+        {
+            Undo.DestroyObjectImmediate(legacyPlayer);
+            Debug.Log("🧹 旧Playerオブジェクトを削除し、DummyCharacterへポーズ判定を移行しました！");
+        }
+
         // --- Receiverへ自動割り当て ---
         SlimeVRTestReceiver receiver = FindObjectOfType<SlimeVRTestReceiver>();
         if (receiver != null)

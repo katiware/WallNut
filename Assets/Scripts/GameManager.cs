@@ -14,29 +14,43 @@ public class GameManager : MonoBehaviour
     public AudioClip failSE;
     public ParticleSystem successParticle;
     private AudioSource audioSource;
+    [Header("UIパネル・HUD参照（大画面プロジェクター用）")]
+    public GameObject titlePanel;
+    public GameObject countdownPanel;
+    public TextMeshProUGUI countdownText;
+    public GameObject inGameHUD;
+    public TextMeshProUGUI progressText;
+    public GameObject resultPanel;
+    public TextMeshProUGUI resultStatsText;
+    public TextMeshProUGUI resultRankText;
+
     [Header("ゲームルール")]
     public int maxWalls = 10;
     public TextMeshProUGUI comboText;
-    public GameObject resultPanel;
-    
+
+    public enum GameState { Title, Countdown, Playing, Result }
+    [Header("現在のゲーム状態")]
+    public GameState currentState = GameState.Title;
+
     private float timer = 0f;
     private int score = 0;
+    private int successCount = 0; // 純粋な成功回数（壁1枚につき+1）
     private int combo = 0;
     private int spawnedWallsCount = 0;
-    private bool isGameClear = false;
+    private Coroutine countdownCoroutine;
 
     void Start()
     {
-        // タイトル画面で設定された難易度（出現間隔）を適用
-        spawnInterval = GameSettings.wallSpawnInterval;
-
         // 音を鳴らすためのコンポーネントをアタッチ
         audioSource = gameObject.AddComponent<AudioSource>();
+
+        // 起動時はタイトル画面から開始
+        ShowTitle();
     }
 
     void Update()
     {
-        if (isGameClear) return;
+        if (currentState != GameState.Playing) return;
         if (wallPrefabs == null || wallPrefabs.Length == 0) return;
 
         timer += Time.deltaTime;
@@ -53,63 +67,221 @@ public class GameManager : MonoBehaviour
         }
     }
 
+    public void ShowTitle()
+    {
+        currentState = GameState.Title;
+        ClearActiveWalls();
+
+        if (titlePanel != null) titlePanel.SetActive(true);
+        if (countdownPanel != null) countdownPanel.SetActive(false);
+        if (inGameHUD != null) inGameHUD.SetActive(false);
+        if (resultPanel != null) resultPanel.SetActive(false);
+    }
+
+    public void SelectDifficultyEasy()
+    {
+        GameSettings.wallSpeed = 3.5f;
+        GameSettings.wallSpawnInterval = 4.0f;
+        StartCountdown();
+    }
+
+    public void SelectDifficultyNormal()
+    {
+        GameSettings.wallSpeed = 5.0f;
+        GameSettings.wallSpawnInterval = 3.0f;
+        StartCountdown();
+    }
+
+    public void SelectDifficultyHard()
+    {
+        GameSettings.wallSpeed = 7.5f;
+        GameSettings.wallSpawnInterval = 2.0f;
+        StartCountdown();
+    }
+
+    public void StartCountdown()
+    {
+        spawnInterval = GameSettings.wallSpawnInterval;
+        ClearActiveWalls();
+
+        if (countdownCoroutine != null) StopCoroutine(countdownCoroutine);
+        countdownCoroutine = StartCoroutine(CountdownRoutine());
+    }
+
+    private System.Collections.IEnumerator CountdownRoutine()
+    {
+        currentState = GameState.Countdown;
+
+        if (titlePanel != null) titlePanel.SetActive(false);
+        if (countdownPanel != null) countdownPanel.SetActive(true);
+        if (inGameHUD != null) inGameHUD.SetActive(false);
+        if (resultPanel != null) resultPanel.SetActive(false);
+
+        for (int i = 3; i > 0; i--)
+        {
+            if (countdownText != null) countdownText.text = i.ToString();
+            Debug.Log($"⏳ カウントダウン: {i}");
+            yield return new WaitForSeconds(1.0f);
+        }
+
+        if (countdownText != null) countdownText.text = "START!";
+        yield return new WaitForSeconds(0.6f);
+
+        StartGamePlaying();
+    }
+
+    private void StartGamePlaying()
+    {
+        currentState = GameState.Playing;
+        score = 0;
+        successCount = 0;
+        combo = 0;
+        spawnedWallsCount = 0;
+        timer = spawnInterval * 0.5f; // 最初は少し早めに第1問を出す
+
+        if (countdownPanel != null) countdownPanel.SetActive(false);
+        if (inGameHUD != null) inGameHUD.SetActive(true);
+
+        UpdateUI();
+        Debug.Log("🏁 ゲームスタート！ 壁が迫ってきます！");
+    }
+
     void SpawnWall()
     {
-        // ランダムな壁プレハブを選ぶ
         int randomIndex = Random.Range(0, wallPrefabs.Length);
         GameObject newWall = Instantiate(wallPrefabs[randomIndex], spawnPosition, Quaternion.identity);
         spawnedWallsCount++;
         
-        // テスト用：壁の色を正解のポーズの色に合わせる（0=白, 1=赤, 2=青）
         WallMover mover = newWall.GetComponent<WallMover>();
         Renderer r = newWall.GetComponent<Renderer>();
         
         if (r != null && mover != null)
         {
-            // インスタンスごとに色を変えるためマテリアルを複製
             r.material = new Material(r.material); 
-            
             if (mover.requiredPose == 0) r.material.color = Color.white;
             else if (mover.requiredPose == 1) r.material.color = Color.red;
             else if (mover.requiredPose == 2) r.material.color = Color.blue;
         }
+
+        UpdateUI();
     }
 
     public void AddScore()
     {
+        successCount++;
         combo++;
-        score += combo; // コンボ数分だけスコア加算
-        
-        if (scoreText != null) 
-        {
-            scoreText.text = $"Score: {score}";
-        }
-        if (comboText != null)
-        {
-            comboText.text = $"{combo} COMBO!";
-        }
+        score += combo * 100;
 
-        // 成功時の演出
+        UpdateUI();
+
         if (audioSource != null && successSE != null) audioSource.PlayOneShot(successSE);
         if (successParticle != null) successParticle.Play();
 
-        Debug.Log($"現在の成功回数: {score}回！");
+        Debug.Log($"⭕ 成功！ ({successCount}/{maxWalls}回) Score: {score}, {combo} COMBO!");
     }
 
     public void Fail()
     {
-        // 失敗時の演出
         combo = 0;
-        if (comboText != null) comboText.text = "";
+        UpdateUI();
 
         if (audioSource != null && failSE != null) audioSource.PlayOneShot(failSE);
-        Debug.Log("❌ 失敗...");
+        Debug.Log($"❌ 失敗... ({successCount}/{maxWalls}回)");
+    }
+
+    void UpdateUI()
+    {
+        if (scoreText != null) 
+        {
+            scoreText.text = $"SCORE: {score}";
+        }
+        if (progressText != null)
+        {
+            progressText.text = $"WALL: {Mathf.Min(spawnedWallsCount, maxWalls)} / {maxWalls}";
+        }
+        if (comboText != null)
+        {
+            comboText.text = combo > 1 ? $"{combo} COMBO!" : "";
+        }
     }
 
     void GameClear()
     {
-        isGameClear = true;
-        if (resultPanel != null) resultPanel.SetActive(true);
-        Debug.Log($"ゲームクリア！ 最終スコア: {score}");
+        currentState = GameState.Result;
+        if (inGameHUD != null) inGameHUD.SetActive(false);
+
+        string rank = "C";
+        if (successCount >= maxWalls) rank = "S+";
+        else if (successCount >= 8) rank = "S";
+        else if (successCount >= 6) rank = "A";
+        else if (successCount >= 4) rank = "B";
+
+        if (resultPanel != null)
+        {
+            resultPanel.SetActive(true);
+            if (resultRankText != null) resultRankText.text = $"RANK: {rank}";
+            if (resultStatsText != null)
+            {
+                resultStatsText.text = $"PASSED: {successCount} / {maxWalls}\nFINAL SCORE: {score:N0}";
+            }
+        }
+
+        Debug.Log($"🎉 ゲーム終了！ ランク: {rank} 成功回数: {successCount}/{maxWalls}回 (最終スコア: {score})");
+    }
+
+    public void ClearActiveWalls()
+    {
+        WallMover[] activeWalls = FindObjectsOfType<WallMover>();
+        foreach (var wall in activeWalls)
+        {
+            Destroy(wall.gameObject);
+        }
+    }
+
+    void OnGUI()
+    {
+        // Canvasが未配置の場合のフォールバック＆プロジェクター用クイック操作
+        if (titlePanel == null)
+        {
+            DrawFallbackGUI();
+        }
+    }
+
+    private void DrawFallbackGUI()
+    {
+        if (currentState == GameState.Title)
+        {
+            GUILayout.BeginArea(new Rect(Screen.width * 0.25f, Screen.height * 0.2f, Screen.width * 0.5f, Screen.height * 0.6f), "【WallNut タイトル】", GUI.skin.window);
+            GUILayout.Label("全身ポーズアクション WallNut", GUI.skin.box);
+            GUILayout.Space(20);
+            GUILayout.Label("▼ 難易度を選択してスタート ▼");
+            if (GUILayout.Button("🟢 かんたん (Easy: ゆっくり)", GUILayout.Height(50))) SelectDifficultyEasy();
+            if (GUILayout.Button("🟡 ふつう (Normal: 標準)", GUILayout.Height(50))) SelectDifficultyNormal();
+            if (GUILayout.Button("🔴 むずかしい (Hard: 高速)", GUILayout.Height(50))) SelectDifficultyHard();
+            GUILayout.EndArea();
+        }
+        else if (currentState == GameState.Countdown)
+        {
+            GUIStyle style = new GUIStyle(GUI.skin.box);
+            style.fontSize = 50;
+            style.alignment = TextAnchor.MiddleCenter;
+            GUI.Box(new Rect(Screen.width * 0.3f, Screen.height * 0.35f, Screen.width * 0.4f, 120), "READY...", style);
+        }
+        else if (currentState == GameState.Playing)
+        {
+            GUIStyle hudStyle = new GUIStyle(GUI.skin.box);
+            hudStyle.fontSize = 24;
+            hudStyle.alignment = TextAnchor.MiddleCenter;
+            GUI.Box(new Rect(Screen.width * 0.35f, 10, Screen.width * 0.3f, 50), $"WALL: {Mathf.Min(spawnedWallsCount, maxWalls)} / {maxWalls}   SCORE: {score}", hudStyle);
+        }
+        else if (currentState == GameState.Result)
+        {
+            GUILayout.BeginArea(new Rect(Screen.width * 0.25f, Screen.height * 0.2f, Screen.width * 0.5f, Screen.height * 0.6f), "【GAME RESULT】", GUI.skin.window);
+            GUILayout.Label($"★ 結果発表 ★\n成功回数: {successCount} / {maxWalls}\nスコア: {score}", GUI.skin.box);
+            GUILayout.Space(20);
+            if (GUILayout.Button("もう一度あそぶ (Retry)", GUILayout.Height(50))) StartCountdown();
+            if (GUILayout.Button("タイトルへもどる (Title)", GUILayout.Height(50))) ShowTitle();
+            GUILayout.EndArea();
+        }
     }
 }
