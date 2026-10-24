@@ -13,6 +13,8 @@ public class WallBuilder : MonoBehaviour
 
     void Start()
     {
+        // すでにエディタで構築されたブロック（子オブジェクト）が存在する場合は二重生成しない
+        if (transform.childCount > 0) return;
         BuildWall();
     }
 
@@ -64,7 +66,7 @@ public class WallBuilder : MonoBehaviour
     }
 
     // 5x5 (x:0~4, y:0~4) のグリッドで穴の形を定義する
-    bool IsHole(int poseId, int x, int y)
+    public static bool IsHole(int poseId, int x, int y)
     {
         // 0: 棒立ち (真ん中一列だけ空ける)
         if (poseId == 0)
