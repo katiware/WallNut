@@ -59,10 +59,10 @@ public class PlayerDummy : MonoBehaviour
     public float calibratedHeadHeight = 1.55f;
     public float calibratedLeftArmHeight = 1.2f;
     public float calibratedRightArmHeight = 1.2f;
-    public float calibratedLeftFootAngle = 0f;
-    public float calibratedRightFootAngle = 0f;
-    public float calibratedLeftKneeAngle = 0f;
-    public float calibratedRightKneeAngle = 0f;
+    public Quaternion calibratedLeftFootRot = Quaternion.identity;
+    public Quaternion calibratedRightFootRot = Quaternion.identity;
+    public Quaternion calibratedLeftKneeRot = Quaternion.identity;
+    public Quaternion calibratedRightKneeRot = Quaternion.identity;
     private string calibrationMessage = "";
     private float calibrationMessageTimer = 0f;
 
@@ -146,23 +146,23 @@ public class PlayerDummy : MonoBehaviour
         }
         if (leftFootBone != null)
         {
-            calibratedLeftFootAngle = NormalizeAngle(leftFootBone.localEulerAngles.x);
+            calibratedLeftFootRot = leftFootBone.localRotation;
         }
         if (rightFootBone != null)
         {
-            calibratedRightFootAngle = NormalizeAngle(rightFootBone.localEulerAngles.x);
+            calibratedRightFootRot = rightFootBone.localRotation;
         }
         if (leftKneeBone != null)
         {
-            calibratedLeftKneeAngle = NormalizeAngle(leftKneeBone.localEulerAngles.x);
+            calibratedLeftKneeRot = leftKneeBone.localRotation;
         }
         if (rightKneeBone != null)
         {
-            calibratedRightKneeAngle = NormalizeAngle(rightKneeBone.localEulerAngles.x);
+            calibratedRightKneeRot = rightKneeBone.localRotation;
         }
 
         isCalibrated = true;
-        calibrationMessage = $"🎯 キャリブレーション完了 (基準胸高: {calibratedSpineHeight:F2}m)";
+        calibrationMessage = $"[CALIBRATION OK] 基準胸高: {calibratedSpineHeight:F2}m";
         calibrationMessageTimer = 2.5f;
         Debug.Log($"[Calibration] {calibrationMessage} | LeftArm: {calibratedLeftArmHeight:F2}m, RightArm: {calibratedRightArmHeight:F2}m");
     }
@@ -180,28 +180,28 @@ public class PlayerDummy : MonoBehaviour
 
         int detectedPose = 0; // デフォルトは 0: 棒立ち (Stand)
 
-        // --- 1. 足首および膝の曲がり具合の計算（7点トラッキング） ---
+        // --- 1. 足首および膝の曲がり具合の計算（7点トラッキング: 3D回転角差分） ---
         bool isLeftLegBent = false;
         bool isRightLegBent = false;
 
         if (leftFootBone != null)
         {
-            float lFootDelta = Mathf.Abs(NormalizeAngle(leftFootBone.localEulerAngles.x) - calibratedLeftFootAngle);
+            float lFootDelta = Quaternion.Angle(leftFootBone.localRotation, calibratedLeftFootRot);
             if (lFootDelta >= legAngleThreshold) isLeftLegBent = true;
         }
         if (rightFootBone != null)
         {
-            float rFootDelta = Mathf.Abs(NormalizeAngle(rightFootBone.localEulerAngles.x) - calibratedRightFootAngle);
+            float rFootDelta = Quaternion.Angle(rightFootBone.localRotation, calibratedRightFootRot);
             if (rFootDelta >= legAngleThreshold) isRightLegBent = true;
         }
         if (leftKneeBone != null)
         {
-            float lKneeDelta = Mathf.Abs(NormalizeAngle(leftKneeBone.localEulerAngles.x) - calibratedLeftKneeAngle);
+            float lKneeDelta = Quaternion.Angle(leftKneeBone.localRotation, calibratedLeftKneeRot);
             if (lKneeDelta >= legAngleThreshold) isLeftLegBent = true;
         }
         if (rightKneeBone != null)
         {
-            float rKneeDelta = Mathf.Abs(NormalizeAngle(rightKneeBone.localEulerAngles.x) - calibratedRightKneeAngle);
+            float rKneeDelta = Quaternion.Angle(rightKneeBone.localRotation, calibratedRightKneeRot);
             if (rKneeDelta >= legAngleThreshold) isRightLegBent = true;
         }
 

@@ -13,6 +13,10 @@ public class SlimeVRMockSender : MonoBehaviour
     [Tooltip("送信間隔（秒）")]
     public float sendInterval = 0.05f;
 
+    [Header("モック送信の有効化")]
+    [Tooltip("擬似データを送信するかどうか。実機SlimeVRをテストする際はOFF(false)にしてください")]
+    public bool enableMockSending = false;
+
     [Header("送信ポーズモード（キーボードで切り替え可能）")]
     [Tooltip("0: 自動うねうね, 1: 棒立ち(N), 2: バンザイ(B), 3: しゃがみ(S), 4: Tポーズ(T), 5: 右腕上げ(R), 6: 左腕上げ(L), 7: フラミンゴ(F)")]
     public int simulatedPoseMode = 1;
@@ -23,13 +27,21 @@ public class SlimeVRMockSender : MonoBehaviour
     void Start()
     {
         udpClient = new UdpClient();
-        simulatedPoseMode = 1; // 起動時は必ず棒立ち(Stand)からスタート
-        Debug.Log($"[Mock Sender] 擬似OSCデータの送信準備完了。送信先: {targetIP}:{port}");
-        Debug.Log("💡 キーボードで送信ポーズを変更: [N]棒立ち, [B]バンザイ, [S]しゃがみ, [T]Tポーズ, [R]右腕上げ, [L]左腕上げ, [F]片足立ち, [C]キャリブレーション, [Space]自動デモ");
+        simulatedPoseMode = 1; // 棒立ち(Stand)
+        Debug.Log($"[Mock Sender] 擬似OSC送信機 準備完了 (初期状態: {(enableMockSending ? "有効" : "無効(実機優先)")})");
     }
 
     void Update()
     {
+        // キー入力でモック送信のON/OFFを切り替え可能 [M]キー
+        if (Input.GetKeyDown(KeyCode.M))
+        {
+            enableMockSending = !enableMockSending;
+            Debug.Log($"📡 [Mock Sender] 擬似OSC送信: {(enableMockSending ? "有効化 (テスト送信中)" : "停止 (実機SlimeVR優先)")}");
+        }
+
+        if (!enableMockSending) return;
+
         // キー入力で送信ポーズモードを切り替え
         if (Input.GetKeyDown(KeyCode.N)) SetPoseMode(1); // 棒立ち
         else if (Input.GetKeyDown(KeyCode.B)) SetPoseMode(2); // バンザイ
@@ -151,8 +163,31 @@ public class SlimeVRMockSender : MonoBehaviour
     void OnGUI()
     {
         // 画面左上にテスト用のポーズ切替UIを表示
-        GUILayout.BeginArea(new Rect(10, 10, 230, 310), "【擬似OSC送信操作】", GUI.skin.window);
+        GUILayout.BeginArea(new Rect(10, 10, 240, 340), "【擬似OSC送信操作】", GUI.skin.window);
         
+        // モック送信のON/OFF切り替えボタン
+        GUI.color = enableMockSending ? Color.cyan : Color.white;
+        string toggleText = enableMockSending ? "🟢 擬似送信: 稼働中 [M]" : "⚪ 擬似送信: 停止 (実機優先) [M]";
+        if (GUILayout.Button(toggleText, GUILayout.Height(26)))
+        {
+            enableMockSending = !enableMockSending;
+        }
+        GUI.color = Color.white;
+        GUILayout.Space(4);
+
+        if (!enableMockSending)
+        {
+            GUILayout.Label("※実機SlimeVRが優先されます。\nモックテストを行う場合は上のボタンまたは[M]キーで有効化してください。");
+            GUILayout.Space(5);
+            if (GUILayout.Button("🎯 キャリブレーション [C]"))
+            {
+                PlayerDummy dummy = FindObjectOfType<PlayerDummy>();
+                if (dummy != null) dummy.Calibrate();
+            }
+            GUILayout.EndArea();
+            return;
+        }
+
         string currentText = simulatedPoseMode switch
         {
             1 => "1. 棒立ち [N]",
