@@ -55,6 +55,8 @@ public class DummyCharacterBuilder : EditorWindow
         dummyController.spine = spine.transform;
         dummyController.leftArmBone = lArm.transform;
         dummyController.rightArmBone = rArm.transform;
+        dummyController.leftKneeBone = lHip.transform;
+        dummyController.rightKneeBone = rHip.transform;
         dummyController.leftFootBone = lFoot.transform;
         dummyController.rightFootBone = rFoot.transform;
 
@@ -66,17 +68,20 @@ public class DummyCharacterBuilder : EditorWindow
             Debug.Log("🧹 旧Playerオブジェクトを削除し、DummyCharacterへポーズ判定を移行しました！");
         }
 
-        // --- Receiverへ自動割り当て ---
+        // --- Receiverへ自動割り当て（7点対応） ---
         SlimeVRTestReceiver receiver = FindObjectOfType<SlimeVRTestReceiver>();
         if (receiver != null)
         {
             Undo.RecordObject(receiver, "Assign Dummy Bones");
-            receiver.headBone = head.transform;
-            receiver.leftFootBone = lFoot.transform;
-            receiver.rightFootBone = rFoot.transform;
+            receiver.chestBone = spine.transform;
             receiver.leftArmBone = lArm.transform;
             receiver.rightArmBone = rArm.transform;
-            Debug.Log("🤖 ダミーキャラクターを生成し、頭・足・腕のボーンをSlimeVRTestReceiverに自動割り当てしました！");
+            receiver.leftKneeBone = lHip.transform;
+            receiver.rightKneeBone = rHip.transform;
+            receiver.leftFootBone = lFoot.transform;
+            receiver.rightFootBone = rFoot.transform;
+            receiver.headBone = head.transform;
+            Debug.Log("🤖 ダミーキャラクターを生成し、胸・両手・両膝・両足首の7点ボーンをSlimeVRTestReceiverに自動割り当てしました！");
 
             // MockSenderがシーンに存在しなければ、Receiverと同じオブジェクトに自動追加
             SlimeVRMockSender sender = FindObjectOfType<SlimeVRMockSender>();

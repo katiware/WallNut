@@ -14,17 +14,23 @@ public class SlimeVRTestReceiver : MonoBehaviour
     [Tooltip("SlimeVRがOSCを送信するポート。デフォルトは9000です")]
     public int port = 9000; 
 
-    [Header("キャラクターのボーン（関節）割り当て")]
-    [Tooltip("頭のTransform")]
-    public Transform headBone;
-    [Tooltip("左足のTransform")]
-    public Transform leftFootBone;
-    [Tooltip("右足のTransform")]
-    public Transform rightFootBone;
-    [Tooltip("左腕のTransform")]
+    [Header("キャラクターのボーン（関節）割り当て（7点対応）")]
+    [Tooltip("胸・胴体のTransform (1点)")]
+    public Transform chestBone;
+    [Tooltip("左手・左腕のTransform (1点: 握りこみ)")]
     public Transform leftArmBone;
-    [Tooltip("右腕のTransform")]
+    [Tooltip("右手・右腕のTransform (1点: 握りこみ)")]
     public Transform rightArmBone;
+    [Tooltip("左膝のTransform (1点)")]
+    public Transform leftKneeBone;
+    [Tooltip("右膝のTransform (1点)")]
+    public Transform rightKneeBone;
+    [Tooltip("左足首のTransform (1点)")]
+    public Transform leftFootBone;
+    [Tooltip("右足首のTransform (1点)")]
+    public Transform rightFootBone;
+    [Tooltip("頭のTransform (任意)")]
+    public Transform headBone;
 
     [Header("デバッグ")]
     [Tooltip("受信したOSCデータをコンソールに表示する")]
@@ -42,7 +48,24 @@ public class SlimeVRTestReceiver : MonoBehaviour
 
     void Start()
     {
+        AutoFindBonesIfEmpty();
         StartReceiving();
+    }
+
+    public void AutoFindBonesIfEmpty()
+    {
+        PlayerDummy dummy = FindObjectOfType<PlayerDummy>();
+        if (dummy != null)
+        {
+            if (chestBone == null) chestBone = dummy.spine;
+            if (leftArmBone == null) leftArmBone = dummy.leftArmBone;
+            if (rightArmBone == null) rightArmBone = dummy.rightArmBone;
+            if (leftKneeBone == null) leftKneeBone = dummy.leftKneeBone;
+            if (rightKneeBone == null) rightKneeBone = dummy.rightKneeBone;
+            if (leftFootBone == null) leftFootBone = dummy.leftFootBone;
+            if (rightFootBone == null) rightFootBone = dummy.rightFootBone;
+            if (headBone == null) headBone = dummy.headBone;
+        }
     }
 
     void Update()
@@ -60,44 +83,75 @@ public class SlimeVRTestReceiver : MonoBehaviour
 
     private void ProcessMessage(OscMessage msg)
     {
-        if (msg.values == null || msg.values.Count < 3) return;
+        if (msg.values == null || msg.values.Count == 0) return;
+
+        // OSCデータ形式の判別（オイラー角 3つ、クォータニオン 4つ、または VRChat標準 Pos 3 + Quat 4 の7つ）
+        Quaternion targetRotation = Quaternion.identity;
+
+        if (msg.values.Count >= 7)
+        {
+            // VRChat OSC標準: [pos.x, pos.y, pos.z, rot.x, rot.y, rot.z, rot.w]
+            targetRotation = new Quaternion(msg.values[3], msg.values[4], msg.values[5], msg.values[6]);
+        }
+        else if (msg.values.Count >= 4)
+        {
+            // クォータニオン: [rot.x, rot.y, rot.z, rot.w]
+            targetRotation = new Quaternion(msg.values[0], msg.values[1], msg.values[2], msg.values[3]);
+        }
+        else if (msg.values.Count >= 3)
+        {
+            // オイラー角: [x, y, z]
+            targetRotation = Quaternion.Euler(msg.values[0], msg.values[1], msg.values[2]);
+        }
+
+        string addr = msg.address.ToLower();
 
         if (showDebugLog)
         {
-            Debug.Log($"[OSC受信] {msg.address} -> ({msg.values[0]:F1}, {msg.values[1]:F1}, {msg.values[2]:F1})");
+            Debug.Log($"[OSC受信] {msg.address} ({msg.values.Count}値) -> Rot:{targetRotation.eulerAngles:F1}");
         }
 
-        // OSCで送られてくる3つの数値をオイラー角(x, y, z)として解釈し、Quaternionに変換
-        Vector3 receivedEuler = new Vector3(msg.values[0], msg.values[1], msg.values[2]);
-        Quaternion targetRotation = Quaternion.Euler(receivedEuler);
-
-        // アドレスに応じて各ボーンに回転を適用
-        switch (msg.address)
+        // --- 1. 胸 (Chest / Spine / Waist: 1点) ---
+        if (addr.Contains("chest") || addr.Contains("waist") || addr.Contains("spine") || addr.Contains("tracker/1"))
         {
-            case "/tracking/vrsystem/head/pose":
-                if (headBone != null)
-                {
-                    headBone.localRotation = targetRotation;
-                }
-                else if (showDebugLog)
-                {
-                    Debug.LogWarning("[SlimeVR] headBone が設定されていません！インスペクターで割り当ててください。");
-                }
-                break;
-            case "/tracking/vrsystem/leftfoot/pose":
-                if (leftFootBone != null) leftFootBone.localRotation = targetRotation;
-                break;
-            case "/tracking/vrsystem/rightfoot/pose":
-                if (rightFootBone != null) rightFootBone.localRotation = targetRotation;
-                break;
-            case "/tracking/vrsystem/leftarm/pose":
-                if (leftArmBone != null) leftArmBone.localRotation = targetRotation;
-                break;
-            case "/tracking/vrsystem/rightarm/pose":
-                if (rightArmBone != null) rightArmBone.localRotation = targetRotation;
-                break;
-            default:
-                break;
+            if (chestBone != null) chestBone.localRotation = targetRotation;
+        }
+        // --- 2. 左手 / 左腕 (Left Hand / Controller / Arm: 握りこみ) ---
+        else if (addr.Contains("left") && (addr.Contains("controller") || addr.Contains("hand") || addr.Contains("arm")))
+        {
+            if (leftArmBone != null) leftArmBone.localRotation = targetRotation;
+        }
+        // --- 3. 右手 / 右腕 (Right Hand / Controller / Arm: 握りこみ) ---
+        else if (addr.Contains("right") && (addr.Contains("controller") || addr.Contains("hand") || addr.Contains("arm")))
+        {
+            if (rightArmBone != null) rightArmBone.localRotation = targetRotation;
+        }
+        // --- 4. 左膝 (Left Knee) ---
+        else if (addr.Contains("left") && addr.Contains("knee"))
+        {
+            if (leftKneeBone != null) leftKneeBone.localRotation = targetRotation;
+            else if (leftFootBone != null) leftFootBone.localRotation = targetRotation; // 膝ボーン未設定時は足で代用
+        }
+        // --- 5. 右膝 (Right Knee) ---
+        else if (addr.Contains("right") && addr.Contains("knee"))
+        {
+            if (rightKneeBone != null) rightKneeBone.localRotation = targetRotation;
+            else if (rightFootBone != null) rightFootBone.localRotation = targetRotation;
+        }
+        // --- 6. 左足 / 左足首 (Left Foot / Ankle) ---
+        else if (addr.Contains("left") && (addr.Contains("foot") || addr.Contains("ankle")))
+        {
+            if (leftFootBone != null) leftFootBone.localRotation = targetRotation;
+        }
+        // --- 7. 右足 / 右足首 (Right Foot / Ankle) ---
+        else if (addr.Contains("right") && (addr.Contains("foot") || addr.Contains("ankle")))
+        {
+            if (rightFootBone != null) rightFootBone.localRotation = targetRotation;
+        }
+        // --- 8. 頭 (Head: 送信されている場合のフォールバック) ---
+        else if (addr.Contains("head"))
+        {
+            if (headBone != null) headBone.localRotation = targetRotation;
         }
     }
 

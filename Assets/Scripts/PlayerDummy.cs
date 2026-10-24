@@ -17,13 +17,23 @@ public class PlayerDummy : MonoBehaviour
     public int currentPose = 0;
     public string currentPoseName = "STAND";
 
-    [Header("ボーン参照")]
-    public Transform headBone;
+    [Header("ボーン参照（7点トラッキング対応）")]
+    [Tooltip("胸・胴体 (1点)")]
     public Transform spine;
+    [Tooltip("左手・左腕 (1点: 握りこみ)")]
     public Transform leftArmBone;
+    [Tooltip("右手・右腕 (1点: 握りこみ)")]
     public Transform rightArmBone;
+    [Tooltip("左膝 (1点)")]
+    public Transform leftKneeBone;
+    [Tooltip("右膝 (1点)")]
+    public Transform rightKneeBone;
+    [Tooltip("左足首 (1点)")]
     public Transform leftFootBone;
+    [Tooltip("右足首 (1点)")]
     public Transform rightFootBone;
+    [Tooltip("頭（任意・未装着でも動作可能）")]
+    public Transform headBone;
 
     [Header("判定設定")]
     [Tooltip("ボーンの動きから自動的にポーズを判定する")]
@@ -36,20 +46,23 @@ public class PlayerDummy : MonoBehaviour
     public float tPoseHeightTolerance = 0.18f;
     [Tooltip("Tポーズ判定：両手の横幅の最小スパン（メートル）")]
     public float tPoseWidthMinSpan = 0.8f;
-    [Tooltip("しゃがみ判定：頭が基準位置よりどれくらい低くなればしゃがみとするか（メートル）")]
-    public float squatDropThreshold = 0.25f;
-    [Tooltip("しゃがみ/片足判定：足首/脚の角度がどれくらい曲がれば曲がったとするか（度）")]
-    public float footAngleThreshold = 25f;
+    [Tooltip("しゃがみ判定：胸の高さが基準位置よりどれくらい低くなればしゃがみとするか（メートル）")]
+    public float squatDropThreshold = 0.20f;
+    [Tooltip("しゃがみ/片足判定：膝や足首の角度がどれくらい曲がれば曲がったとするか（度）")]
+    public float legAngleThreshold = 25f;
     [Tooltip("チラつき防止：同じポーズを維持する必要がある時間（秒）")]
     public float poseStabilityDuration = 0.08f;
 
     [Header("キャリブレーション（姿勢・身長基準）")]
     public bool isCalibrated = false;
+    public float calibratedSpineHeight = 1.0f;
     public float calibratedHeadHeight = 1.55f;
     public float calibratedLeftArmHeight = 1.2f;
     public float calibratedRightArmHeight = 1.2f;
     public float calibratedLeftFootAngle = 0f;
     public float calibratedRightFootAngle = 0f;
+    public float calibratedLeftKneeAngle = 0f;
+    public float calibratedRightKneeAngle = 0f;
     private string calibrationMessage = "";
     private float calibrationMessageTimer = 0f;
 
@@ -111,10 +124,14 @@ public class PlayerDummy : MonoBehaviour
     }
 
     /// <summary>
-    /// 現在の直立姿勢を基準として身長・肩の高さ・足の角度を記録（キャリブレーション）
+    /// 現在の直立姿勢を基準として胸の高さ・肩の高さ・足や膝の角度を記録（キャリブレーション）
     /// </summary>
     public void Calibrate()
     {
+        if (spine != null)
+        {
+            calibratedSpineHeight = spine.position.y;
+        }
         if (headBone != null)
         {
             calibratedHeadHeight = headBone.position.y;
@@ -135,43 +152,73 @@ public class PlayerDummy : MonoBehaviour
         {
             calibratedRightFootAngle = NormalizeAngle(rightFootBone.localEulerAngles.x);
         }
+        if (leftKneeBone != null)
+        {
+            calibratedLeftKneeAngle = NormalizeAngle(leftKneeBone.localEulerAngles.x);
+        }
+        if (rightKneeBone != null)
+        {
+            calibratedRightKneeAngle = NormalizeAngle(rightKneeBone.localEulerAngles.x);
+        }
 
         isCalibrated = true;
-        calibrationMessage = $"🎯 キャリブレーション完了 (基準頭高: {calibratedHeadHeight:F2}m)";
+        calibrationMessage = $"🎯 キャリブレーション完了 (基準胸高: {calibratedSpineHeight:F2}m)";
         calibrationMessageTimer = 2.5f;
         Debug.Log($"[Calibration] {calibrationMessage} | LeftArm: {calibratedLeftArmHeight:F2}m, RightArm: {calibratedRightArmHeight:F2}m");
     }
 
     void DetectPoseFromBones()
     {
-        if (headBone == null) return;
+        // 基準ボーン（胸または足）の有無をチェック
+        if (spine == null && leftFootBone == null) return;
 
-        // 初期キャリブレーション（まだ0付近だった場合のフォールバック）
-        if (!isCalibrated && headBone.position.y > 0.5f)
+        // 初期キャリブレーションフォールバック
+        if (!isCalibrated && spine != null && spine.position.y > 0.3f)
         {
             Calibrate();
         }
 
         int detectedPose = 0; // デフォルトは 0: 棒立ち (Stand)
 
-        // --- 1. 足の曲がり具合の計算 ---
-        float lFootDelta = 0f;
-        float rFootDelta = 0f;
-        bool isLeftFootBent = false;
-        bool isRightFootBent = false;
-        if (leftFootBone != null && rightFootBone != null)
+        // --- 1. 足首および膝の曲がり具合の計算（7点トラッキング） ---
+        bool isLeftLegBent = false;
+        bool isRightLegBent = false;
+
+        if (leftFootBone != null)
         {
-            lFootDelta = Mathf.Abs(NormalizeAngle(leftFootBone.localEulerAngles.x) - calibratedLeftFootAngle);
-            rFootDelta = Mathf.Abs(NormalizeAngle(rightFootBone.localEulerAngles.x) - calibratedRightFootAngle);
-            isLeftFootBent = lFootDelta >= footAngleThreshold;
-            isRightFootBent = rFootDelta >= footAngleThreshold;
+            float lFootDelta = Mathf.Abs(NormalizeAngle(leftFootBone.localEulerAngles.x) - calibratedLeftFootAngle);
+            if (lFootDelta >= legAngleThreshold) isLeftLegBent = true;
+        }
+        if (rightFootBone != null)
+        {
+            float rFootDelta = Mathf.Abs(NormalizeAngle(rightFootBone.localEulerAngles.x) - calibratedRightFootAngle);
+            if (rFootDelta >= legAngleThreshold) isRightLegBent = true;
+        }
+        if (leftKneeBone != null)
+        {
+            float lKneeDelta = Mathf.Abs(NormalizeAngle(leftKneeBone.localEulerAngles.x) - calibratedLeftKneeAngle);
+            if (lKneeDelta >= legAngleThreshold) isLeftLegBent = true;
+        }
+        if (rightKneeBone != null)
+        {
+            float rKneeDelta = Mathf.Abs(NormalizeAngle(rightKneeBone.localEulerAngles.x) - calibratedRightKneeAngle);
+            if (rKneeDelta >= legAngleThreshold) isRightLegBent = true;
         }
 
-        // --- 2. 頭の高さの降下量 ---
-        float headDrop = calibratedHeadHeight - headBone.position.y;
-        bool isHeadLow = headDrop >= squatDropThreshold;
+        // --- 2. 胸（Spine）または頭の高さの沈み込み ---
+        bool isBodyLowered = false;
+        if (spine != null)
+        {
+            float spineDrop = calibratedSpineHeight - spine.position.y;
+            isBodyLowered = spineDrop >= squatDropThreshold;
+        }
+        else if (headBone != null)
+        {
+            float headDrop = calibratedHeadHeight - headBone.position.y;
+            isBodyLowered = headDrop >= squatDropThreshold;
+        }
 
-        // --- 3. 手の座標と肩との高低差の計算 ---
+        // --- 3. 手の座標と肩（胸）との高低差の計算（握りこみ2点） ---
         bool hasArms = leftArmBone != null && rightArmBone != null;
         Vector3 leftHandPos = Vector3.zero;
         Vector3 rightHandPos = Vector3.zero;
@@ -185,7 +232,7 @@ public class PlayerDummy : MonoBehaviour
 
         if (hasArms)
         {
-            // 左腕は-X方向、右腕は+X方向に伸びているボーン構造
+            // 握りこみボーンの先端位置
             leftHandPos = leftArmBone.TransformPoint(new Vector3(-0.5f, 0, 0));
             rightHandPos = rightArmBone.TransformPoint(new Vector3(0.5f, 0, 0));
 
@@ -208,12 +255,12 @@ public class PlayerDummy : MonoBehaviour
         }
 
         // ===== ポーズ判定（優先度順） =====
-        // A. しゃがみ (Squat): 頭が下がっている、または両足が大きく曲がっている
-        if (isHeadLow || (isLeftFootBent && isRightFootBent))
+        // A. しゃがみ (Squat): 胸が下がっている、または両足/両膝が曲がっている
+        if (isBodyLowered || (isLeftLegBent && isRightLegBent))
         {
             detectedPose = (int)PoseType.Squat;
         }
-        // B. バンザイ (Banzai): 両腕が上がっている
+        // B. バンザイ (Banzai): 握りこんだ両手が上がっている
         else if (leftHandUp && rightHandUp)
         {
             detectedPose = (int)PoseType.Banzai;
@@ -233,8 +280,8 @@ public class PlayerDummy : MonoBehaviour
         {
             detectedPose = (int)PoseType.TPose;
         }
-        // F. 片足立ち / フラミンゴ (Flamingo): 片方の足だけが曲がっている
-        else if (isLeftFootBent ^ isRightFootBent)
+        // F. 片足立ち / フラミンゴ (Flamingo): 片方の足/膝だけが曲がっている
+        else if (isLeftLegBent ^ isRightLegBent)
         {
             detectedPose = (int)PoseType.Flamingo;
         }
