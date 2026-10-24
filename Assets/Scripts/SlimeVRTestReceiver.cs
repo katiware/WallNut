@@ -65,10 +65,10 @@ public class SlimeVRTestReceiver : MonoBehaviour
     public float facingYawOffset = 0f;
     [Tooltip("胸トラッカーから見た肩の位置 (m)。X=左右幅, Y=高さ")]
     public Vector2 shoulderOffsetFromChest = new Vector2(0.18f, 0.15f);
-    [Tooltip("この秒数データが来なければその部位は停止扱い")]
-    public float trackerTimeout = 1.0f;
-    [Tooltip("データ受信開始からこの秒数後に1回だけ自動キャリブレーション (0以下で無効)")]
-    public float autoCalibrateDelay = 2.0f;
+    [Tooltip("この秒数データが来なければその部位は停止扱い (秒)")]
+    public float trackerTimeout = 3.0f;
+    [Tooltip("データ受信開始からこの秒数後に自動キャリブレーション (0以下で無効)")]
+    public float autoCalibrateDelay = 2.5f;
 
     [Header("デバッグ表示")]
     public bool showDebugLog = false;
@@ -101,6 +101,7 @@ public class SlimeVRTestReceiver : MonoBehaviour
     public bool trackingCalibrated = false;
     private Quaternion facingYaw = Quaternion.identity;
     private float calibChestY = 0f;
+    private float lastAutoCalibAttempt = -999f;
 
     // ---- ボーンのレスト姿勢 (ルート空間) ----
     private Transform rigRoot;
@@ -235,14 +236,14 @@ public class SlimeVRTestReceiver : MonoBehaviour
 
         CopyIdTrackersToRoles();
 
-        // 受信開始から少し待って1回だけ自動キャリブレーション (直立している前提)
+        // 自動キャリブレーション（受信開始後、直立姿勢が整ったタイミングで実行。失敗時は1秒おきにリトライ）
         if (!trackingCalibrated && autoCalibrateDelay > 0f && firstPacketTime >= 0f
-            && Time.time - firstPacketTime >= autoCalibrateDelay && HasAnyPositionData())
+            && Time.time - firstPacketTime >= autoCalibrateDelay
+            && Time.time - lastAutoCalibAttempt >= 1.0f
+            && HasAnyPositionData())
         {
-            Debug.Log("[SlimeVR Receiver] 受信開始を検知したので自動キャリブレーションします (直立・腕を下ろした姿勢で)");
-            PlayerDummy dummy = FindObjectOfType<PlayerDummy>();
-            if (dummy != null) dummy.Calibrate(); // 内部で CalibrateTracking() が呼ばれる
-            else CalibrateTracking();
+            lastAutoCalibAttempt = Time.time;
+            CalibrateTracking();
         }
 
         ApplyToRig();
@@ -376,6 +377,22 @@ public class SlimeVRTestReceiver : MonoBehaviour
         return roles[(int)Role.Chest].hasPos && Recent(roles[(int)Role.Chest]);
     }
 
+    /// <summary>
+    /// 胸の「足からの高さ」。SlimeVR (HMDなし) は頭を原点(0,0,0)にした相対位置で送ってくるため、
+    /// 胸の絶対Yはしゃがんでも変わらない。代わりに足が上がってくるので、胸Y - 低い方の足Y で測る。
+    /// </summary>
+    private float ChestHeightAboveFeet()
+    {
+        TrackerState chest = roles[(int)Role.Chest];
+        TrackerState lf = roles[(int)Role.LeftFoot];
+        TrackerState rf = roles[(int)Role.RightFoot];
+        bool hasL = lf.hasPos && Recent(lf);
+        bool hasR = rf.hasPos && Recent(rf);
+        if (!hasL && !hasR) return chest.pos.y;
+        float footY = hasL && hasR ? Mathf.Min(lf.pos.y, rf.pos.y) : (hasL ? lf.pos.y : rf.pos.y);
+        return chest.pos.y - footY;
+    }
+
     // =====================================================================
     // キャリブレーション
     // =====================================================================
@@ -391,14 +408,14 @@ public class SlimeVRTestReceiver : MonoBehaviour
         CopyIdTrackersToRoles();
 
         TrackerState chest = roles[(int)Role.Chest];
-        if (!Recent(chest))
+        if (!chest.hasPos && !chest.hasRot && idTrackers.Count == 0)
         {
-            Debug.LogWarning("[SlimeVR Receiver] 胸トラッカーのデータが無いためキャリブレーションできません。SlimeVR の VRChat OSC 設定で胸(Chest)が有効か確認してください。");
+            Debug.LogWarning("[SlimeVR Receiver] トラッカーデータが届いていないためキャリブレーションできません。");
             return;
         }
 
         facingYaw = (chest.hasRot ? YawOnly(chest.rot) : Quaternion.identity) * Quaternion.Euler(0f, facingYawOffset, 0f);
-        if (chest.hasPos) calibChestY = chest.pos.y;
+        if (chest.hasPos) calibChestY = ChestHeightAboveFeet();
 
         for (int i = 0; i < RoleCount; i++)
         {
@@ -428,21 +445,25 @@ public class SlimeVRTestReceiver : MonoBehaviour
     }
 
     /// <summary>
-    /// 番号でしか届かないトラッカーを、高さ（胸=最上段 / 手=中段上 / 膝=中段下 / 足=最下段）と
-    /// 胸から見た左右位置で自動的に部位へ割り当てる。
+    /// 番号で届くトラッカーを、高さ（胸=最上段 / 手=中段上 / 膝・足=下段）と
+    /// 左右位置で自動的に部位へ割り当てる。
     /// </summary>
     private void AutoAssignTrackerIds()
     {
         var list = new List<KeyValuePair<string, TrackerState>>();
         foreach (var kv in idTrackers)
         {
-            if (kv.Value.hasPos && Recent(kv.Value)) list.Add(kv);
+            if (kv.Value.hasPos && (Recent(kv.Value) || kv.Value.pos.sqrMagnitude > 0.001f))
+            {
+                list.Add(kv);
+            }
         }
         if (list.Count == 0) return;
 
         idToRole.Clear();
-        list.Sort((a, b) => b.Value.pos.y.CompareTo(a.Value.pos.y)); // 高い順
+        list.Sort((a, b) => b.Value.pos.y.CompareTo(a.Value.pos.y)); // 高い順 (Y大→小)
 
+        // 1. 最も高い位置にあるトラッカーを「胸」に割り当て
         var chest = list[0];
         idToRole[chest.Key] = Role.Chest;
         Quaternion yaw = (chest.Value.hasRot ? YawOnly(chest.Value.rot) : Quaternion.identity) * Quaternion.Euler(0f, facingYawOffset, 0f);
@@ -452,23 +473,50 @@ public class SlimeVRTestReceiver : MonoBehaviour
         float h = Mathf.Max(0.3f, chest.Value.pos.y - floorY);
 
         var hands = new List<KeyValuePair<string, float>>();
-        var knees = new List<KeyValuePair<string, float>>();
-        var feet = new List<KeyValuePair<string, float>>();
+        var legs = new List<KeyValuePair<string, float>>();
 
         for (int i = 1; i < list.Count; i++)
         {
             Vector3 p = list[i].Value.pos;
-            float t = (p.y - floorY) / h;                               // 0=床, 1=胸
-            float lateral = (yawInv * (p - chest.Value.pos)).x;         // -:左, +:右
+            float t = (p.y - floorY) / h;                       // 0=最下段, 1=胸
+            float lateral = (yawInv * (p - chest.Value.pos)).x; // -:左, +:右
             var item = new KeyValuePair<string, float>(list[i].Key, lateral);
-            if (t < 0.15f) feet.Add(item);
-            else if (t < 0.48f) knees.Add(item);
-            else hands.Add(item);
+
+            if (t < 0.45f)
+            {
+                legs.Add(item); // 下半分は脚（膝または足）
+            }
+            else
+            {
+                // 上半分: 体の中心線(横幅10cm以内)かつ胸より下なら「腰」、それ以外は「手/肘」
+                if (Mathf.Abs(lateral) < 0.08f && list.Count >= 6)
+                {
+                    // 腰トラッカー（判定には直接使わないが認識はしておく）
+                    continue;
+                }
+                hands.Add(item);
+            }
         }
 
+        // 手の左右割り当て
         AssignPair(hands, Role.LeftHand, Role.RightHand);
-        AssignPair(knees, Role.LeftKnee, Role.RightKnee);
-        AssignPair(feet, Role.LeftFoot, Role.RightFoot);
+
+        // 脚の割り当て: 4個あれば膝と足、2個なら足（および膝）に割り当て
+        if (legs.Count >= 4)
+        {
+            legs.Sort((a, b) => idTrackers[a.Key].pos.y.CompareTo(idTrackers[b.Key].pos.y)); // 低い順
+            var feet = new List<KeyValuePair<string, float>> { legs[0], legs[1] };
+            var knees = new List<KeyValuePair<string, float>> { legs[2], legs[3] };
+            AssignPair(feet, Role.LeftFoot, Role.RightFoot);
+            AssignPair(knees, Role.LeftKnee, Role.RightKnee);
+        }
+        else
+        {
+            // 2個の場合は足首に割り当て（膝未装着構成でも足首の曲がりで検出可能）
+            AssignPair(legs, Role.LeftFoot, Role.RightFoot);
+            // 膝にも同じ番号を割り当ててフォールバック
+            if (idToRole.ContainsKey(legs[0].Key)) idToRole[legs[0].Key] = Role.LeftFoot;
+        }
     }
 
     private void AssignPair(List<KeyValuePair<string, float>> items, Role leftRole, Role rightRole)
@@ -541,7 +589,7 @@ public class SlimeVRTestReceiver : MonoBehaviour
             ApplyRotation(Role.Chest);
             if (chest.hasPos && trackingCalibrated)
             {
-                float dy = (chest.pos.y - calibChestY) * positionMultiplier;
+                float dy = (ChestHeightAboveFeet() - calibChestY) * positionMultiplier;
                 chestBone.localPosition = chestRestLocalPos + Vector3.up * dy;
             }
         }
@@ -565,7 +613,6 @@ public class SlimeVRTestReceiver : MonoBehaviour
     {
         StopReceiving();
 
-        // 前回の再生で閉じ損ねたソケットがあれば閉じる
         if (s_activeClient != null)
         {
             try { s_activeClient.Close(); } catch { }
@@ -575,9 +622,22 @@ public class SlimeVRTestReceiver : MonoBehaviour
         try
         {
             udpClient = new UdpClient();
-            udpClient.ExclusiveAddressUse = false;
             udpClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-            udpClient.Client.Bind(new IPEndPoint(IPAddress.Any, port));
+
+            // Windows UDPの10054 (ICMP Connection Reset) による受信停止を防止
+            const int SIO_UDP_CONNRESET = -1744830452;
+            try { udpClient.Client.IOControl((IOControlCode)SIO_UDP_CONNRESET, new byte[] { 0, 0, 0, 0 }, null); } catch { }
+
+            try
+            {
+                udpClient.Client.Bind(new IPEndPoint(IPAddress.Any, port));
+            }
+            catch
+            {
+                // Any がダメなら Loopback (127.0.0.1) にフォールバック
+                udpClient.Client.Bind(new IPEndPoint(IPAddress.Loopback, port));
+            }
+
             s_activeClient = udpClient;
             bindError = null;
 
@@ -590,7 +650,7 @@ public class SlimeVRTestReceiver : MonoBehaviour
         {
             bindError = e.Message;
             Debug.LogError($"[SlimeVR Receiver] ポート {port} のバインドに失敗しました。\n{e.Message}\n" +
-                           "→ 他のアプリ(VRChat等)が同じポートを使っていないか、Unity を一度再起動して閉じ損ねたソケットを解放してください。");
+                           "→ 他のアプリが同じポートを使っていないか確認してください。");
             try { udpClient?.Close(); } catch { }
             udpClient = null;
         }
@@ -621,7 +681,11 @@ public class SlimeVRTestReceiver : MonoBehaviour
                 Interlocked.Increment(ref packetCountThreadSafe);
                 ParseIncomingPacket(data, 0, data.Length);
             }
-            catch (SocketException) { if (!isRunning) break; }
+            catch (SocketException)
+            {
+                if (!isRunning) break;
+                Thread.Sleep(5); // 一時的なソケットエラー時はリトライ
+            }
             catch (System.ObjectDisposedException) { break; }
             catch (System.Exception) { /* 不正パケットは無視して受信継続 */ }
         }
@@ -744,19 +808,31 @@ public class SlimeVRTestReceiver : MonoBehaviour
         GUILayout.BeginArea(new Rect(x + 10f, y + 22f, w - 20f, h - 28f));
 
         float now = Time.time;
-        bool receiving = totalPacketsReceived > 0 && now - lastPacketTime < 1.0f;
+        bool isActivelyReceiving = totalPacketsReceived > 0 && (now - lastPacketTime) < 2.0f;
+        bool hasReceivedBefore = totalPacketsReceived > 0;
 
         var status = new GUIStyle(GUI.skin.label) { fontStyle = FontStyle.Bold };
         if (bindError != null)
         {
             status.normal.textColor = Color.red;
-            GUILayout.Label($"ポート {port}: バインド失敗 (Unity再起動 or ポート競合)", status);
+            GUILayout.Label($"ポート {port}: バインド失敗 ({bindError})", status);
+        }
+        else if (isActivelyReceiving)
+        {
+            status.normal.textColor = Color.green;
+            GUILayout.Label($"ポート {port}: 受信中 ● (通信正常)", status);
+        }
+        else if (hasReceivedBefore)
+        {
+            status.normal.textColor = new Color(1f, 0.6f, 0.1f); // オレンジ
+            GUILayout.Label($"ポート {port}: 一時途絶 △ (最終受信: {(now - lastPacketTime):F1}秒前)", status);
         }
         else
         {
-            status.normal.textColor = receiving ? Color.green : Color.yellow;
-            GUILayout.Label($"ポート {port}: {(receiving ? "受信中 ●" : "待機中 ○ (データ未着)")}", status);
+            status.normal.textColor = Color.yellow;
+            GUILayout.Label($"ポート {port}: 待機中 ○ (データ未着)", status);
         }
+
         GUILayout.Label($"パケット {totalPacketsReceived} / メッセージ {totalMessagesProcessed} / キャリブ {(trackingCalibrated ? "済" : "未")} [C]");
 
         GUILayout.BeginHorizontal();
@@ -776,7 +852,7 @@ public class SlimeVRTestReceiver : MonoBehaviour
         foreach (var kv in recentAddresses)
         {
             if (shown >= 10) break;
-            if (now - recentAddressTimes[kv.Key] > 3f) continue;
+            if (now - recentAddressTimes[kv.Key] > 5f) continue;
             GUILayout.Label($"{kv.Key}  {kv.Value}", small);
             shown++;
         }
