@@ -68,8 +68,87 @@ public class GameManager : MonoBehaviour
         // wallPrefabsがInspectorで未設定の場合の自動救済
         AutoLoadWallPrefabsIfEmpty();
 
+        // UIクリック遮断の自動解除＆ボタンイベントの強制バインド（クリックが反応しない問題を解消）
+        AutoFixUIEvents();
+
         // 起動時はタイトル画面から開始
         ShowTitle();
+    }
+
+    void AutoFixUIEvents()
+    {
+        // 1. シーン内のCanvas上のGraphicRaycasterを確認
+        Canvas[] canvases = FindObjectsOfType<Canvas>();
+        foreach (var c in canvases)
+        {
+            if (c.GetComponent<UnityEngine.UI.GraphicRaycaster>() == null)
+            {
+                c.gameObject.AddComponent<UnityEngine.UI.GraphicRaycaster>();
+            }
+        }
+
+        // 2. 全TextMeshProUGUIのraycastTargetをfalseに（テキストがボタンのクリックを遮断するのを根絶）
+        var allTexts = Resources.FindObjectsOfTypeAll<TMPro.TextMeshProUGUI>();
+        foreach (var t in allTexts)
+        {
+            if (t != null && t.gameObject.scene.IsValid())
+            {
+                t.raycastTarget = false;
+            }
+        }
+
+        // 3. 透明パネル（InGameHUDなど）のraycastTargetをfalseに
+        if (inGameHUD != null)
+        {
+            var img = inGameHUD.GetComponent<UnityEngine.UI.Image>();
+            if (img != null) img.raycastTarget = false;
+        }
+
+        // 4. ボタンのクリックイベントを強制接続（インスペクターで外れていても100%確実にクリック反応）
+        UnityEngine.UI.Button[] allButtons = Resources.FindObjectsOfTypeAll<UnityEngine.UI.Button>();
+        foreach (var btn in allButtons)
+        {
+            if (btn == null || !btn.gameObject.scene.IsValid()) continue;
+
+            if (btn.targetGraphic != null)
+            {
+                btn.targetGraphic.raycastTarget = true;
+            }
+
+            string name = btn.gameObject.name.ToLower();
+            if (name.Contains("easy"))
+            {
+                btn.onClick.RemoveListener(SelectDifficultyEasy);
+                btn.onClick.AddListener(SelectDifficultyEasy);
+            }
+            else if (name.Contains("normal"))
+            {
+                btn.onClick.RemoveListener(SelectDifficultyNormal);
+                btn.onClick.AddListener(SelectDifficultyNormal);
+            }
+            else if (name.Contains("hard"))
+            {
+                btn.onClick.RemoveListener(SelectDifficultyHard);
+                btn.onClick.AddListener(SelectDifficultyHard);
+            }
+            else if (name.Contains("calibrate"))
+            {
+                btn.onClick.RemoveListener(TriggerCalibration);
+                btn.onClick.AddListener(TriggerCalibration);
+            }
+            else if (name.Contains("retry"))
+            {
+                btn.onClick.RemoveListener(StartCountdown);
+                btn.onClick.AddListener(StartCountdown);
+            }
+            else if (name.Contains("title"))
+            {
+                btn.onClick.RemoveListener(ShowTitle);
+                btn.onClick.AddListener(ShowTitle);
+            }
+        }
+
+        Debug.Log("🖱️ [GameManager] UIボタンの自動クリックバインド＆レイキャスト遮断解除を完了しました！");
     }
 
     void AutoLoadWallPrefabsIfEmpty()
