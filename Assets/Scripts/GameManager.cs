@@ -7,7 +7,7 @@ public class GameManager : MonoBehaviour
     public GameObject[] wallPrefabs; 
     public TextMeshProUGUI scoreText; // スコア表示用のUIテキスト
     public float spawnInterval = 3f;
-    public Vector3 spawnPosition = new Vector3(0, 1, 15); // Z=15（奥）から壁を出す
+    public Vector3 spawnPosition = new Vector3(0, 0, 15); // Z=15（奥）、足元Y=0から壁を出す
     
     [Header("演出（エフェクト・サウンド）")]
     public AudioClip successSE;
@@ -160,12 +160,14 @@ public class GameManager : MonoBehaviour
 
         if (wallPrefabs != null && wallPrefabs.Length > 0)
         {
-            int randomIndex = Random.Range(0, wallPrefabs.Length);
-            newWall = Instantiate(wallPrefabs[randomIndex], spawnPosition, Quaternion.identity);
+            // 7種類のプレハブが揃っている場合は該当ポーズのプレハブを直接選出
+            int selectedIndex = targetPose < wallPrefabs.Length ? targetPose : Random.Range(0, wallPrefabs.Length);
+            newWall = Instantiate(wallPrefabs[selectedIndex], spawnPosition, Quaternion.identity);
             WallMover mover = newWall.GetComponent<WallMover>();
-            if (mover != null)
+            if (mover != null && wallPrefabs.Length < 7)
             {
-                mover.requiredPose = targetPose; // 全バリエーションのポーズを適用
+                // 旧プレハブが3個しかない場合のみポーズ番号を上書き
+                mover.requiredPose = targetPose;
             }
         }
         else
@@ -176,7 +178,8 @@ public class GameManager : MonoBehaviour
             newWall.transform.position = spawnPosition;
             WallMover mover = newWall.AddComponent<WallMover>();
             mover.requiredPose = targetPose;
-            newWall.AddComponent<WallBuilder>();
+            WallBuilder builder = newWall.AddComponent<WallBuilder>();
+            builder.blockSize = 0.46f;
         }
 
         spawnedWallsCount++;

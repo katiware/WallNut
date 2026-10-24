@@ -26,9 +26,9 @@ public class SetupOptimalCamera : EditorWindow
         Undo.RecordObject(cam, "Setup Projector Camera FOV");
 
         // プロジェクター三人称視点の黄金比アングル
-        Vector3 optimalPos = new Vector3(0f, 1.7f, -4.2f);
-        Vector3 optimalRot = new Vector3(6f, 0f, 0f);
-        float optimalFOV = 60f;
+        Vector3 optimalPos = new Vector3(0f, 1.4f, -3.2f);
+        Vector3 optimalRot = new Vector3(5f, 0f, 0f);
+        float optimalFOV = 55f;
 
         cam.transform.position = optimalPos;
         cam.transform.rotation = Quaternion.Euler(optimalRot);

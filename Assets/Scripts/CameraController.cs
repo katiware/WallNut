@@ -6,15 +6,15 @@ public class CameraController : MonoBehaviour
     public Transform targetPlayer;
 
     [Header("カメラ推奨固定位置（デフォルト）")]
-    public Vector3 defaultPosition = new Vector3(0f, 1.7f, -4.2f);
-    public Vector3 defaultRotation = new Vector3(6f, 0f, 0f);
-    public float defaultFOV = 60f;
+    public Vector3 defaultPosition = new Vector3(0f, 1.4f, -3.2f);
+    public Vector3 defaultRotation = new Vector3(5f, 0f, 0f);
+    public float defaultFOV = 55f;
 
     [Header("現在のカメラ設定")]
-    public float cameraHeight = 1.7f;
-    public float cameraDistance = -4.2f;
-    public float cameraTilt = 6f;
-    public float cameraFOV = 60f;
+    public float cameraHeight = 1.4f;
+    public float cameraDistance = -3.2f;
+    public float cameraTilt = 5f;
+    public float cameraFOV = 55f;
 
     [Header("調整モード設定")]
     [Tooltip("起動時・プレイ前に調整UIを表示するか")]

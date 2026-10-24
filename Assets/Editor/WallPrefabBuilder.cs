@@ -46,9 +46,9 @@ public class WallPrefabBuilder : EditorWindow
 
         int width = 5;
         int height = 5;
-        float blockSize = 1.0f;
-        float blockGapSize = 0.97f; // ブロックの境目がわかるようにわずかに隙間をあける（もじもじくんブロック風）
-        float thickness = 0.5f;
+        float blockSize = 0.46f; // 人間の身長1.75m・肩幅・腕スパンにピッタリ一致
+        float blockGapSize = 0.445f; // ブロックの境目がわかるようにわずかに隙間をあける（もじもじくんブロック風）
+        float thickness = 0.4f;
 
         float startX = -((width - 1) * blockSize) / 2f;
         float startY = blockSize / 2f;
