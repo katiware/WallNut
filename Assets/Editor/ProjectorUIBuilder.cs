@@ -48,13 +48,15 @@ public class ProjectorUIBuilder : EditorWindow
 
         // --- 2. Title Panel (タイトル画面) ---
         GameObject titlePanel = CreatePanel("TitlePanel", canvasObj.transform, new Color(0, 0, 0, 0.8f));
-        CreateText("TitleText", titlePanel.transform, "WallNut", 100, FontStyles.Bold, new Vector2(0, 240), new Vector2(1200, 150), Color.yellow);
-        CreateText("SubtitleText", titlePanel.transform, "BODY POSE ACTION GAME", 44, FontStyles.Normal, new Vector2(0, 140), new Vector2(1200, 70), Color.white);
-        CreateText("DescText", titlePanel.transform, "- SELECT DIFFICULTY -", 36, FontStyles.Normal, new Vector2(0, 40), new Vector2(1000, 60), new Color(0.8f, 0.8f, 0.8f));
+        CreateText("TitleText", titlePanel.transform, "WallNut", 100, FontStyles.Bold, new Vector2(0, 260), new Vector2(1200, 150), Color.yellow);
+        CreateText("SubtitleText", titlePanel.transform, "BODY POSE ACTION GAME", 44, FontStyles.Normal, new Vector2(0, 160), new Vector2(1200, 70), Color.white);
+        
+        CreateButton("Button_Calibrate", titlePanel.transform, "🎯 CALIBRATE POSTURE [C]", new Vector2(0, 50), new Vector2(500, 75), 28, gm, nameof(GameManager.TriggerCalibration));
+        CreateText("DescText", titlePanel.transform, "- SELECT DIFFICULTY TO START -", 34, FontStyles.Normal, new Vector2(0, -40), new Vector2(1000, 50), new Color(0.8f, 0.8f, 0.8f));
 
-        CreateButton("Button_Easy", titlePanel.transform, "EASY (Slow)", new Vector2(-420, -120), new Vector2(360, 100), 32, gm, nameof(GameManager.SelectDifficultyEasy));
-        CreateButton("Button_Normal", titlePanel.transform, "NORMAL", new Vector2(0, -120), new Vector2(360, 100), 32, gm, nameof(GameManager.SelectDifficultyNormal));
-        CreateButton("Button_Hard", titlePanel.transform, "HARD (Fast)", new Vector2(420, -120), new Vector2(360, 100), 32, gm, nameof(GameManager.SelectDifficultyHard));
+        CreateButton("Button_Easy", titlePanel.transform, "EASY (Slow)", new Vector2(-420, -140), new Vector2(360, 95), 30, gm, nameof(GameManager.SelectDifficultyEasy));
+        CreateButton("Button_Normal", titlePanel.transform, "NORMAL", new Vector2(0, -140), new Vector2(360, 95), 30, gm, nameof(GameManager.SelectDifficultyNormal));
+        CreateButton("Button_Hard", titlePanel.transform, "HARD (Fast)", new Vector2(420, -140), new Vector2(360, 95), 30, gm, nameof(GameManager.SelectDifficultyHard));
 
         // --- 3. Countdown Panel (カウントダウン画面) ---
         GameObject countdownPanel = CreatePanel("CountdownPanel", canvasObj.transform, new Color(0, 0, 0, 0.5f));
@@ -72,8 +74,9 @@ public class ProjectorUIBuilder : EditorWindow
         TextMeshProUGUI resultRankText = CreateText("RankText", resultPanel.transform, "RANK: S", 96, FontStyles.Bold, new Vector2(0, 190), new Vector2(800, 130), Color.green);
         TextMeshProUGUI resultStatsText = CreateText("StatsText", resultPanel.transform, "PASSED: 8 / 10\nFINAL SCORE: 3,200", 44, FontStyles.Normal, new Vector2(0, 40), new Vector2(900, 140), Color.white);
 
-        CreateButton("Button_Retry", resultPanel.transform, "PLAY AGAIN (Retry)", new Vector2(-220, -180), new Vector2(380, 90), 30, gm, nameof(GameManager.StartCountdown));
-        CreateButton("Button_Title", resultPanel.transform, "TITLE SCREEN", new Vector2(220, -180), new Vector2(380, 90), 30, gm, nameof(GameManager.ShowTitle));
+        CreateButton("Button_Retry", resultPanel.transform, "PLAY AGAIN (Retry)", new Vector2(-360, -180), new Vector2(330, 85), 28, gm, nameof(GameManager.StartCountdown));
+        CreateButton("Button_Calibrate_Result", resultPanel.transform, "🎯 CALIBRATE [C]", new Vector2(0, -180), new Vector2(330, 85), 26, gm, nameof(GameManager.TriggerCalibration));
+        CreateButton("Button_Title", resultPanel.transform, "TITLE SCREEN", new Vector2(360, -180), new Vector2(330, 85), 28, gm, nameof(GameManager.ShowTitle));
 
         // --- GameManagerへ自動アサイン ---
         gm.titlePanel = titlePanel;

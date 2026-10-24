@@ -148,22 +148,73 @@ public class GameManager : MonoBehaviour
 
     void SpawnWall()
     {
-        int randomIndex = Random.Range(0, wallPrefabs.Length);
-        GameObject newWall = Instantiate(wallPrefabs[randomIndex], spawnPosition, Quaternion.identity);
+        int targetPose = Random.Range(0, 7); // 0〜6の全ポーズからランダム抽選
+        GameObject newWall;
+
+        if (wallPrefabs != null && wallPrefabs.Length > 0)
+        {
+            int randomIndex = Random.Range(0, wallPrefabs.Length);
+            newWall = Instantiate(wallPrefabs[randomIndex], spawnPosition, Quaternion.identity);
+            WallMover mover = newWall.GetComponent<WallMover>();
+            if (mover != null)
+            {
+                mover.requiredPose = targetPose; // 全バリエーションのポーズを適用
+            }
+        }
+        else
+        {
+            // プレハブ未登録時の安全な自動生成フォールバック
+            newWall = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            newWall.name = $"Wall_{targetPose}";
+            newWall.transform.position = spawnPosition;
+            WallMover mover = newWall.AddComponent<WallMover>();
+            mover.requiredPose = targetPose;
+            newWall.AddComponent<WallBuilder>();
+        }
+
         spawnedWallsCount++;
         
-        WallMover mover = newWall.GetComponent<WallMover>();
+        WallMover wallMover = newWall.GetComponent<WallMover>();
         Renderer r = newWall.GetComponent<Renderer>();
         
-        if (r != null && mover != null)
+        if (r != null && wallMover != null)
         {
             r.material = new Material(r.material); 
-            if (mover.requiredPose == 0) r.material.color = Color.white;
-            else if (mover.requiredPose == 1) r.material.color = Color.red;
-            else if (mover.requiredPose == 2) r.material.color = Color.blue;
+            r.material.color = GetWallColor(wallMover.requiredPose);
         }
 
         UpdateUI();
+    }
+
+    public static Color GetWallColor(int poseId)
+    {
+        switch (poseId)
+        {
+            case 0: return Color.white;
+            case 1: return Color.red;
+            case 2: return new Color(0.2f, 0.6f, 1f); // 青
+            case 3: return new Color(0.2f, 1f, 0.3f); // 緑
+            case 4: return new Color(1f, 0.85f, 0.1f); // 黄
+            case 5: return new Color(0.1f, 0.95f, 0.95f); // シアン
+            case 6: return new Color(1f, 0.25f, 0.8f); // マゼンタ
+            default: return Color.white;
+        }
+    }
+
+    /// <summary>
+    /// プレイヤーの身長・姿勢キャリブレーションを実行
+    /// </summary>
+    public void TriggerCalibration()
+    {
+        PlayerDummy dummy = FindObjectOfType<PlayerDummy>();
+        if (dummy != null)
+        {
+            dummy.Calibrate();
+        }
+        else
+        {
+            Debug.LogWarning("[GameManager] PlayerDummyが見つかりませんでした。");
+        }
     }
 
     public void AddScore()
@@ -251,9 +302,11 @@ public class GameManager : MonoBehaviour
     {
         if (currentState == GameState.Title)
         {
-            GUILayout.BeginArea(new Rect(Screen.width * 0.25f, Screen.height * 0.2f, Screen.width * 0.5f, Screen.height * 0.6f), "【WallNut タイトル】", GUI.skin.window);
+            GUILayout.BeginArea(new Rect(Screen.width * 0.25f, Screen.height * 0.15f, Screen.width * 0.5f, Screen.height * 0.7f), "【WallNut タイトル】", GUI.skin.window);
             GUILayout.Label("全身ポーズアクション WallNut", GUI.skin.box);
-            GUILayout.Space(20);
+            GUILayout.Space(15);
+            if (GUILayout.Button("🎯 身長・姿勢キャリブレーション [Cキー]", GUILayout.Height(45))) TriggerCalibration();
+            GUILayout.Space(15);
             GUILayout.Label("▼ 難易度を選択してスタート ▼");
             if (GUILayout.Button("🟢 かんたん (Easy: ゆっくり)", GUILayout.Height(50))) SelectDifficultyEasy();
             if (GUILayout.Button("🟡 ふつう (Normal: 標準)", GUILayout.Height(50))) SelectDifficultyNormal();
@@ -276,9 +329,11 @@ public class GameManager : MonoBehaviour
         }
         else if (currentState == GameState.Result)
         {
-            GUILayout.BeginArea(new Rect(Screen.width * 0.25f, Screen.height * 0.2f, Screen.width * 0.5f, Screen.height * 0.6f), "【GAME RESULT】", GUI.skin.window);
+            GUILayout.BeginArea(new Rect(Screen.width * 0.25f, Screen.height * 0.15f, Screen.width * 0.5f, Screen.height * 0.7f), "【GAME RESULT】", GUI.skin.window);
             GUILayout.Label($"★ 結果発表 ★\n成功回数: {successCount} / {maxWalls}\nスコア: {score}", GUI.skin.box);
-            GUILayout.Space(20);
+            GUILayout.Space(15);
+            if (GUILayout.Button("🎯 身長・姿勢キャリブレーション [Cキー]", GUILayout.Height(45))) TriggerCalibration();
+            GUILayout.Space(15);
             if (GUILayout.Button("もう一度あそぶ (Retry)", GUILayout.Height(50))) StartCountdown();
             if (GUILayout.Button("タイトルへもどる (Title)", GUILayout.Height(50))) ShowTitle();
             GUILayout.EndArea();

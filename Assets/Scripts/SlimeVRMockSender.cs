@@ -14,7 +14,7 @@ public class SlimeVRMockSender : MonoBehaviour
     public float sendInterval = 0.05f;
 
     [Header("送信ポーズモード（キーボードで切り替え可能）")]
-    [Tooltip("0: 自動うねうね, 1: 棒立ち(N), 2: バンザイ(B), 3: しゃがみ(S)")]
+    [Tooltip("0: 自動うねうね, 1: 棒立ち(N), 2: バンザイ(B), 3: しゃがみ(S), 4: Tポーズ(T), 5: 右腕上げ(R), 6: 左腕上げ(L), 7: フラミンゴ(F)")]
     public int simulatedPoseMode = 1;
 
     private UdpClient udpClient;
@@ -25,27 +25,25 @@ public class SlimeVRMockSender : MonoBehaviour
         udpClient = new UdpClient();
         simulatedPoseMode = 1; // 起動時は必ず棒立ち(Stand)からスタート
         Debug.Log($"[Mock Sender] 擬似OSCデータの送信準備完了。送信先: {targetIP}:{port}");
-        Debug.Log("💡 画面のボタン、またはキーボードで送信ポーズを変更できます: [B] バンザイ, [S] しゃがみ, [N] 棒立ち, [Space] 自動うねうね");
+        Debug.Log("💡 キーボードで送信ポーズを変更: [N]棒立ち, [B]バンザイ, [S]しゃがみ, [T]Tポーズ, [R]右腕上げ, [L]左腕上げ, [F]片足立ち, [C]キャリブレーション, [Space]自動デモ");
     }
 
     void Update()
     {
         // キー入力で送信ポーズモードを切り替え
-        if (Input.GetKeyDown(KeyCode.B))
+        if (Input.GetKeyDown(KeyCode.N)) SetPoseMode(1); // 棒立ち
+        else if (Input.GetKeyDown(KeyCode.B)) SetPoseMode(2); // バンザイ
+        else if (Input.GetKeyDown(KeyCode.S)) SetPoseMode(3); // しゃがみ
+        else if (Input.GetKeyDown(KeyCode.T)) SetPoseMode(4); // Tポーズ
+        else if (Input.GetKeyDown(KeyCode.R)) SetPoseMode(5); // 右腕上げ
+        else if (Input.GetKeyDown(KeyCode.L)) SetPoseMode(6); // 左腕上げ
+        else if (Input.GetKeyDown(KeyCode.F)) SetPoseMode(7); // 片足立ち (Flamingo)
+        else if (Input.GetKeyDown(KeyCode.Space)) SetPoseMode(0); // 自動うねうね
+        else if (Input.GetKeyDown(KeyCode.C))
         {
-            SetPoseMode(2); // バンザイ
-        }
-        else if (Input.GetKeyDown(KeyCode.S))
-        {
-            SetPoseMode(3); // しゃがみ
-        }
-        else if (Input.GetKeyDown(KeyCode.N))
-        {
-            SetPoseMode(1); // 棒立ち
-        }
-        else if (Input.GetKeyDown(KeyCode.Space))
-        {
-            SetPoseMode(0); // 自動うねうね
+            // キャリブレーション実行
+            PlayerDummy dummy = FindObjectOfType<PlayerDummy>();
+            if (dummy != null) dummy.Calibrate();
         }
 
         timer += Time.deltaTime;
@@ -59,7 +57,17 @@ public class SlimeVRMockSender : MonoBehaviour
     public void SetPoseMode(int mode)
     {
         simulatedPoseMode = mode;
-        string name = mode == 1 ? "【棒立ち】" : (mode == 2 ? "【バンザイ】" : (mode == 3 ? "【しゃがみ】" : "【自動うねうね】"));
+        string name = mode switch
+        {
+            1 => "【1. 棒立ち (Stand)】",
+            2 => "【2. バンザイ (Banzai)】",
+            3 => "【3. しゃがみ (Squat)】",
+            4 => "【4. Tポーズ (T-Pose)】",
+            5 => "【5. 右腕上げ (RightArm)】",
+            6 => "【6. 左腕上げ (LeftArm)】",
+            7 => "【7. 片足立ち (Flamingo)】",
+            _ => "【0. 自動デモうねうね】"
+        };
         Debug.Log($"📡 [Mock Sender] 送信ポーズ切替: {name}");
     }
 
@@ -89,7 +97,7 @@ public class SlimeVRMockSender : MonoBehaviour
                 break;
 
             case 2: // バンザイ (Banzai) - 両腕を高く上げる
-                headPitch = -15f; // 少し上を向く
+                headPitch = -15f;
                 headPan = 0f;
                 leftArmZ = -70f;  // 左腕を上げる(-Z)
                 rightArmZ = 70f;  // 右腕を上げる(+Z)
@@ -100,8 +108,36 @@ public class SlimeVRMockSender : MonoBehaviour
                 headPitch = 20f;
                 headPan = 0f;
                 leftArmZ = 45f; rightArmZ = -45f; // 腕は下げ気味
-                leftFootX = 45f; // 足首・脚を曲げる
+                leftFootX = 45f; // 両足を曲げる
                 rightFootX = 45f;
+                break;
+
+            case 4: // Tポーズ (T-Pose) - 両腕を水平に広げる
+                headPitch = 0f; headPan = 0f;
+                leftArmZ = 0f;   // 水平
+                rightArmZ = 0f;  // 水平
+                leftFootX = 0f; rightFootX = 0f;
+                break;
+
+            case 5: // 右腕上げ (RightArmUp) - 右腕だけ上げて左腕は下げる
+                headPitch = 0f; headPan = 0f;
+                leftArmZ = 70f;  // 左腕下げる
+                rightArmZ = 70f; // 右腕上げる
+                leftFootX = 0f; rightFootX = 0f;
+                break;
+
+            case 6: // 左腕上げ (LeftArmUp) - 左腕だけ上げて右腕は下げる
+                headPitch = 0f; headPan = 0f;
+                leftArmZ = -70f;  // 左腕上げる
+                rightArmZ = -70f; // 右腕下げる
+                leftFootX = 0f; rightFootX = 0f;
+                break;
+
+            case 7: // 片足立ち (Flamingo) - 右足だけ曲げる
+                headPitch = 0f; headPan = 0f;
+                leftArmZ = 70f; rightArmZ = -70f; // 腕は下ろす
+                leftFootX = 0f;
+                rightFootX = 55f; // 右足だけ大きく曲げる
                 break;
         }
 
@@ -114,16 +150,38 @@ public class SlimeVRMockSender : MonoBehaviour
 
     void OnGUI()
     {
-        // 画面左上にテスト用のポーズ切替UIを表示（マウスクリックで即座に切替可能）
-        GUILayout.BeginArea(new Rect(10, 10, 220, 200), "【送信ポーズ操作】", GUI.skin.window);
+        // 画面左上にテスト用のポーズ切替UIを表示
+        GUILayout.BeginArea(new Rect(10, 10, 230, 310), "【擬似OSC送信操作】", GUI.skin.window);
         
-        string currentText = simulatedPoseMode == 1 ? "棒立ち(白)" : (simulatedPoseMode == 2 ? "バンザイ(赤)" : (simulatedPoseMode == 3 ? "しゃがみ(青)" : "自動うねうね"));
+        string currentText = simulatedPoseMode switch
+        {
+            1 => "1. 棒立ち [N]",
+            2 => "2. バンザイ [B]",
+            3 => "3. しゃがみ [S]",
+            4 => "4. Tポーズ [T]",
+            5 => "5. 右腕上げ [R]",
+            6 => "6. 左腕上げ [L]",
+            7 => "7. 片足立ち [F]",
+            _ => "0. 自動うねうね [Space]"
+        };
         GUILayout.Label($"送信中: {currentText}");
+        GUILayout.Space(5);
 
         if (GUILayout.Button("1. 棒立ち [N]")) SetPoseMode(1);
         if (GUILayout.Button("2. バンザイ [B]")) SetPoseMode(2);
         if (GUILayout.Button("3. しゃがみ [S]")) SetPoseMode(3);
+        if (GUILayout.Button("4. Tポーズ [T]")) SetPoseMode(4);
+        if (GUILayout.Button("5. 右腕上げ [R]")) SetPoseMode(5);
+        if (GUILayout.Button("6. 左腕上げ [L]")) SetPoseMode(6);
+        if (GUILayout.Button("7. 片足立ち [F]")) SetPoseMode(7);
         if (GUILayout.Button("0. 自動デモ [Space]")) SetPoseMode(0);
+        
+        GUILayout.Space(5);
+        if (GUILayout.Button("🎯 キャリブレーション [C]"))
+        {
+            PlayerDummy dummy = FindObjectOfType<PlayerDummy>();
+            if (dummy != null) dummy.Calibrate();
+        }
 
         GUILayout.EndArea();
     }

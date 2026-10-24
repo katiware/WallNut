@@ -83,6 +83,30 @@ public class WallBuilder : MonoBehaviour
         {
             if (x >= 1 && x <= 3 && y <= 2) return true;
         }
+        // 3: Tポーズ (十字型：中央一列 + 肩の高さに横一列)
+        else if (poseId == 3)
+        {
+            if (x == 2) return true; // 体と頭
+            if (y == 3) return true; // 横に伸ばした両腕
+        }
+        // 4: 右腕上げ (右側だけ上部に腕の穴)
+        else if (poseId == 4)
+        {
+            if (x == 2) return true; // 体と頭
+            if (x == 3 && (y == 3 || y == 4)) return true; // 右腕
+        }
+        // 5: 左腕上げ (左側だけ上部に腕の穴)
+        else if (poseId == 5)
+        {
+            if (x == 2) return true; // 体と頭
+            if (x == 1 && (y == 3 || y == 4)) return true; // 左腕
+        }
+        // 6: 片足立ち / フラミンゴ (片足を曲げて横に突き出す)
+        else if (poseId == 6)
+        {
+            if (x == 2) return true; // 体と軸足
+            if (x == 3 && (y == 1 || y == 2)) return true; // 曲げた片足
+        }
 
         return false;
     }

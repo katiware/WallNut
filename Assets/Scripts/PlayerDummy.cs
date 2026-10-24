@@ -2,10 +2,20 @@ using UnityEngine;
 
 public class PlayerDummy : MonoBehaviour
 {
+    public enum PoseType
+    {
+        Stand = 0,       // 棒立ち (白)
+        Banzai = 1,      // バンザイ (赤)
+        Squat = 2,       // しゃがみ (青)
+        TPose = 3,       // Tポーズ / 腕水平 (緑)
+        RightArmUp = 4,  // 右腕上げ (黄)
+        LeftArmUp = 5,   // 左腕上げ (シアン)
+        Flamingo = 6     // 片足立ち / フラミンゴ (マゼンタ)
+    }
+
     [Header("現在のポーズ状態")]
-    [Tooltip("0: 棒立ち, 1: バンザイ, 2: しゃがみ")]
     public int currentPose = 0;
-    public string currentPoseName = "棒立ち (Stand)";
+    public string currentPoseName = "STAND";
 
     [Header("ボーン参照")]
     public Transform headBone;
@@ -20,18 +30,32 @@ public class PlayerDummy : MonoBehaviour
     public bool autoDetectPose = true;
     [Tooltip("バンザイ判定：手が肩よりどれくらい高ければバンザイとするか（メートル）")]
     public float banzaiHeightThreshold = 0.15f;
+    [Tooltip("腕下げ判定：手が肩よりどれくらい低ければ腕を下げているとするか（メートル）")]
+    public float armDownThreshold = 0.10f;
+    [Tooltip("Tポーズ判定：手の高さが肩の高さに対して許容される誤差（メートル）")]
+    public float tPoseHeightTolerance = 0.18f;
+    [Tooltip("Tポーズ判定：両手の横幅の最小スパン（メートル）")]
+    public float tPoseWidthMinSpan = 0.8f;
     [Tooltip("しゃがみ判定：頭が基準位置よりどれくらい低くなればしゃがみとするか（メートル）")]
     public float squatDropThreshold = 0.25f;
-    [Tooltip("しゃがみ判定：足首/脚の角度がどれくらい曲がればしゃがみとするか（度）")]
-    public float squatFootAngleThreshold = 25f;
+    [Tooltip("しゃがみ/片足判定：足首/脚の角度がどれくらい曲がれば曲がったとするか（度）")]
+    public float footAngleThreshold = 25f;
     [Tooltip("チラつき防止：同じポーズを維持する必要がある時間（秒）")]
-    public float poseStabilityDuration = 0.1f;
+    public float poseStabilityDuration = 0.08f;
+
+    [Header("キャリブレーション（姿勢・身長基準）")]
+    public bool isCalibrated = false;
+    public float calibratedHeadHeight = 1.55f;
+    public float calibratedLeftArmHeight = 1.2f;
+    public float calibratedRightArmHeight = 1.2f;
+    public float calibratedLeftFootAngle = 0f;
+    public float calibratedRightFootAngle = 0f;
+    private string calibrationMessage = "";
+    private float calibrationMessageTimer = 0f;
 
     [Header("見た目のフィードバック")]
     public Renderer[] characterRenderers;
 
-    private float initialHeadHeight = 1.55f;
-    private bool isCalibrated = false;
     private int pendingPose = 0;
     private float pendingPoseTimer = 0f;
 
@@ -46,39 +70,37 @@ public class PlayerDummy : MonoBehaviour
             characterRenderers = GetComponentsInChildren<Renderer>();
         }
 
-        // 初期姿勢の頭の高さを記録（しゃがみ判定の基準値）
-        if (headBone != null)
-        {
-            initialHeadHeight = headBone.position.y;
-            isCalibrated = true;
-        }
-
+        // 初期キャリブレーション
+        Calibrate();
         ApplyPoseColor(0);
     }
 
     void Update()
     {
-        // 手動キーボード操作（デバッグ用：1=棒立ち, 2=バンザイ, 3=しゃがみ）
-        if (Input.GetKeyDown(KeyCode.Alpha1))
+        // Cキーでいつでもワンタッチキャリブレーション
+        if (Input.GetKeyDown(KeyCode.C))
         {
-            autoDetectPose = false;
-            ChangePose(0);
+            Calibrate();
         }
-        else if (Input.GetKeyDown(KeyCode.Alpha2))
-        {
-            autoDetectPose = false;
-            ChangePose(1);
-        }
-        else if (Input.GetKeyDown(KeyCode.Alpha3))
-        {
-            autoDetectPose = false;
-            ChangePose(2);
-        }
+
+        // 手動キーボード操作（デバッグ用）
+        if (Input.GetKeyDown(KeyCode.Alpha1)) { autoDetectPose = false; ChangePose(0); } // 棒立ち
+        else if (Input.GetKeyDown(KeyCode.Alpha2)) { autoDetectPose = false; ChangePose(1); } // バンザイ
+        else if (Input.GetKeyDown(KeyCode.Alpha3)) { autoDetectPose = false; ChangePose(2); } // しゃがみ
+        else if (Input.GetKeyDown(KeyCode.Alpha4)) { autoDetectPose = false; ChangePose(3); } // Tポーズ
+        else if (Input.GetKeyDown(KeyCode.Alpha5)) { autoDetectPose = false; ChangePose(4); } // 右腕上げ
+        else if (Input.GetKeyDown(KeyCode.Alpha6)) { autoDetectPose = false; ChangePose(5); } // 左腕上げ
+        else if (Input.GetKeyDown(KeyCode.Alpha7)) { autoDetectPose = false; ChangePose(6); } // フラミンゴ
         else if (Input.GetKeyDown(KeyCode.Alpha0))
         {
-            // 0キーで自動判定モードに復帰
             autoDetectPose = true;
             Debug.Log("[Player] 自動ポーズ判定モードに戻りました");
+        }
+
+        // キャリブレーションメッセージの表示タイマー更新
+        if (calibrationMessageTimer > 0f)
+        {
+            calibrationMessageTimer -= Time.deltaTime;
         }
 
         // ボーンからの自動ポーズ判定
@@ -88,56 +110,141 @@ public class PlayerDummy : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// 現在の直立姿勢を基準として身長・肩の高さ・足の角度を記録（キャリブレーション）
+    /// </summary>
+    public void Calibrate()
+    {
+        if (headBone != null)
+        {
+            calibratedHeadHeight = headBone.position.y;
+        }
+        if (leftArmBone != null)
+        {
+            calibratedLeftArmHeight = leftArmBone.position.y;
+        }
+        if (rightArmBone != null)
+        {
+            calibratedRightArmHeight = rightArmBone.position.y;
+        }
+        if (leftFootBone != null)
+        {
+            calibratedLeftFootAngle = NormalizeAngle(leftFootBone.localEulerAngles.x);
+        }
+        if (rightFootBone != null)
+        {
+            calibratedRightFootAngle = NormalizeAngle(rightFootBone.localEulerAngles.x);
+        }
+
+        isCalibrated = true;
+        calibrationMessage = $"🎯 キャリブレーション完了 (基準頭高: {calibratedHeadHeight:F2}m)";
+        calibrationMessageTimer = 2.5f;
+        Debug.Log($"[Calibration] {calibrationMessage} | LeftArm: {calibratedLeftArmHeight:F2}m, RightArm: {calibratedRightArmHeight:F2}m");
+    }
+
     void DetectPoseFromBones()
     {
         if (headBone == null) return;
 
-        // 初期キャリブレーション（初期値が0付近だった場合の再取得）
+        // 初期キャリブレーション（まだ0付近だった場合のフォールバック）
         if (!isCalibrated && headBone.position.y > 0.5f)
         {
-            initialHeadHeight = headBone.position.y;
-            isCalibrated = true;
+            Calibrate();
         }
 
-        int detectedPose = 0; // デフォルトは 0: 棒立ち
+        int detectedPose = 0; // デフォルトは 0: 棒立ち (Stand)
 
-        // --- 1. しゃがみ（Squat）の判定 ---
-        // A. 頭の高さが下がっているか（位置トラッキングがある場合）
-        float headDrop = initialHeadHeight - headBone.position.y;
-        bool isHeadLow = headDrop >= squatDropThreshold;
-
-        // B. 足首/脚が前後に大きく曲がっているか（回転トラッキングの場合）
-        bool isFootBent = false;
+        // --- 1. 足の曲がり具合の計算 ---
+        float lFootDelta = 0f;
+        float rFootDelta = 0f;
+        bool isLeftFootBent = false;
+        bool isRightFootBent = false;
         if (leftFootBone != null && rightFootBone != null)
         {
-            float lFootAngle = Mathf.Abs(NormalizeAngle(leftFootBone.localEulerAngles.x));
-            float rFootAngle = Mathf.Abs(NormalizeAngle(rightFootBone.localEulerAngles.x));
-            isFootBent = (lFootAngle >= squatFootAngleThreshold && rFootAngle >= squatFootAngleThreshold);
+            lFootDelta = Mathf.Abs(NormalizeAngle(leftFootBone.localEulerAngles.x) - calibratedLeftFootAngle);
+            rFootDelta = Mathf.Abs(NormalizeAngle(rightFootBone.localEulerAngles.x) - calibratedRightFootAngle);
+            isLeftFootBent = lFootDelta >= footAngleThreshold;
+            isRightFootBent = rFootDelta >= footAngleThreshold;
         }
 
-        if (isHeadLow || isFootBent)
+        // --- 2. 頭の高さの降下量 ---
+        float headDrop = calibratedHeadHeight - headBone.position.y;
+        bool isHeadLow = headDrop >= squatDropThreshold;
+
+        // --- 3. 手の座標と肩との高低差の計算 ---
+        bool hasArms = leftArmBone != null && rightArmBone != null;
+        Vector3 leftHandPos = Vector3.zero;
+        Vector3 rightHandPos = Vector3.zero;
+        bool leftHandUp = false;
+        bool rightHandUp = false;
+        bool leftHandDown = false;
+        bool rightHandDown = false;
+        bool leftHandHorizontal = false;
+        bool rightHandHorizontal = false;
+        float armSpan = 0f;
+
+        if (hasArms)
         {
-            detectedPose = 2; // しゃがみ
+            // 左腕は-X方向、右腕は+X方向に伸びているボーン構造
+            leftHandPos = leftArmBone.TransformPoint(new Vector3(-0.5f, 0, 0));
+            rightHandPos = rightArmBone.TransformPoint(new Vector3(0.5f, 0, 0));
+
+            float leftShoulderY = leftArmBone.position.y;
+            float rightShoulderY = rightArmBone.position.y;
+
+            // バンザイ（肩より上）
+            leftHandUp = leftHandPos.y > (leftShoulderY + banzaiHeightThreshold);
+            rightHandUp = rightHandPos.y > (rightShoulderY + banzaiHeightThreshold);
+
+            // 腕下げ（肩より下）
+            leftHandDown = leftHandPos.y < (leftShoulderY - armDownThreshold);
+            rightHandDown = rightHandPos.y < (rightShoulderY - armDownThreshold);
+
+            // 水平（肩付近の高さ）
+            leftHandHorizontal = Mathf.Abs(leftHandPos.y - leftShoulderY) <= tPoseHeightTolerance;
+            rightHandHorizontal = Mathf.Abs(rightHandPos.y - rightShoulderY) <= tPoseHeightTolerance;
+
+            armSpan = Mathf.Abs(leftHandPos.x - rightHandPos.x);
         }
-        // --- 2. バンザイ（Banzai）の判定 ---
-        else if (leftArmBone != null && rightArmBone != null)
+
+        // ===== ポーズ判定（優先度順） =====
+        // A. しゃがみ (Squat): 頭が下がっている、または両足が大きく曲がっている
+        if (isHeadLow || (isLeftFootBent && isRightFootBent))
         {
-            // 腕の先端（手首付近）のワールド座標を計算
-            // 左腕は-X方向、右腕は+X方向に伸びている
-            Vector3 leftHandPos = leftArmBone.TransformPoint(new Vector3(-0.5f, 0, 0));
-            Vector3 rightHandPos = rightArmBone.TransformPoint(new Vector3(0.5f, 0, 0));
-
-            // 両手がそれぞれの肩よりも高い位置にあるか
-            bool leftHandUp = leftHandPos.y > (leftArmBone.position.y + banzaiHeightThreshold);
-            bool rightHandUp = rightHandPos.y > (rightArmBone.position.y + banzaiHeightThreshold);
-
-            if (leftHandUp && rightHandUp)
-            {
-                detectedPose = 1; // バンザイ
-            }
+            detectedPose = (int)PoseType.Squat;
+        }
+        // B. バンザイ (Banzai): 両腕が上がっている
+        else if (leftHandUp && rightHandUp)
+        {
+            detectedPose = (int)PoseType.Banzai;
+        }
+        // C. 右腕上げ (RightArmUp): 右手が上 かつ 左手が下
+        else if (rightHandUp && leftHandDown)
+        {
+            detectedPose = (int)PoseType.RightArmUp;
+        }
+        // D. 左腕上げ (LeftArmUp): 左手が上 かつ 右手が下
+        else if (leftHandUp && rightHandDown)
+        {
+            detectedPose = (int)PoseType.LeftArmUp;
+        }
+        // E. Tポーズ (TPose): 両腕が水平かつ横に十分広がっている
+        else if (leftHandHorizontal && rightHandHorizontal && armSpan >= tPoseWidthMinSpan)
+        {
+            detectedPose = (int)PoseType.TPose;
+        }
+        // F. 片足立ち / フラミンゴ (Flamingo): 片方の足だけが曲がっている
+        else if (isLeftFootBent ^ isRightFootBent)
+        {
+            detectedPose = (int)PoseType.Flamingo;
+        }
+        // G. それ以外: 棒立ち (Stand)
+        else
+        {
+            detectedPose = (int)PoseType.Stand;
         }
 
-        // チラつき防止：検出されたポーズが一定時間（poseStabilityDuration秒）安定したら確定
+        // チラつき防止（デバウンス処理）
         if (detectedPose != currentPose)
         {
             if (detectedPose == pendingPose)
@@ -172,30 +279,51 @@ public class PlayerDummy : MonoBehaviour
     public void ChangePose(int newPose)
     {
         currentPose = newPose;
-        switch (currentPose)
+        Color poseColor = Color.white;
+
+        switch ((PoseType)currentPose)
         {
-            case 0:
+            case PoseType.Stand:
                 currentPoseName = "STAND";
-                ApplyPoseColor(Color.white);
+                poseColor = Color.white;
                 break;
-            case 1:
+            case PoseType.Banzai:
                 currentPoseName = "BANZAI";
-                ApplyPoseColor(Color.red);
+                poseColor = Color.red;
                 break;
-            case 2:
+            case PoseType.Squat:
                 currentPoseName = "SQUAT";
-                ApplyPoseColor(Color.blue);
+                poseColor = new Color(0.2f, 0.6f, 1f); // スカイブルー
+                break;
+            case PoseType.TPose:
+                currentPoseName = "T-POSE";
+                poseColor = new Color(0.2f, 1f, 0.3f); // エメラルドグリーン
+                break;
+            case PoseType.RightArmUp:
+                currentPoseName = "RIGHT ARM UP";
+                poseColor = new Color(1f, 0.85f, 0.1f); // イエロー
+                break;
+            case PoseType.LeftArmUp:
+                currentPoseName = "LEFT ARM UP";
+                poseColor = new Color(0.1f, 0.95f, 0.95f); // シアン
+                break;
+            case PoseType.Flamingo:
+                currentPoseName = "FLAMINGO (1-LEG)";
+                poseColor = new Color(1f, 0.25f, 0.8f); // マゼンタ
+                break;
+            default:
+                currentPoseName = $"POSE {currentPose}";
+                poseColor = Color.white;
                 break;
         }
 
+        ApplyPoseColor(poseColor);
         Debug.Log($"[PoseDetector] Pose Detected: {currentPoseName} (ID: {currentPose})");
     }
 
     void ApplyPoseColor(int poseId)
     {
-        if (poseId == 0) ApplyPoseColor(Color.white);
-        else if (poseId == 1) ApplyPoseColor(Color.red);
-        else if (poseId == 2) ApplyPoseColor(Color.blue);
+        ChangePose(poseId);
     }
 
     void ApplyPoseColor(Color color)
@@ -247,16 +375,36 @@ public class PlayerDummy : MonoBehaviour
 
     void OnGUI()
     {
+        // 右上に現在のポーズ名を表示
         GUIStyle style = new GUIStyle(GUI.skin.box);
         style.fontSize = 20;
         style.fontStyle = FontStyle.Bold;
         style.alignment = TextAnchor.MiddleCenter;
 
-        if (currentPose == 1) style.normal.textColor = Color.red;
-        else if (currentPose == 2) style.normal.textColor = Color.cyan;
-        else style.normal.textColor = Color.white;
+        switch ((PoseType)currentPose)
+        {
+            case PoseType.Banzai: style.normal.textColor = Color.red; break;
+            case PoseType.Squat: style.normal.textColor = new Color(0.2f, 0.6f, 1f); break;
+            case PoseType.TPose: style.normal.textColor = Color.green; break;
+            case PoseType.RightArmUp: style.normal.textColor = Color.yellow; break;
+            case PoseType.LeftArmUp: style.normal.textColor = Color.cyan; break;
+            case PoseType.Flamingo: style.normal.textColor = Color.magenta; break;
+            default: style.normal.textColor = Color.white; break;
+        }
 
-        GUI.Box(new Rect(Screen.width - 270, 10, 260, 50), $"POSE: {currentPoseName}", style);
+        GUI.Box(new Rect(Screen.width - 280, 10, 270, 50), $"POSE: {currentPoseName}", style);
+
+        // キャリブレーション通知メッセージ
+        if (calibrationMessageTimer > 0f)
+        {
+            GUIStyle calibStyle = new GUIStyle(GUI.skin.box);
+            calibStyle.fontSize = 22;
+            calibStyle.fontStyle = FontStyle.Bold;
+            calibStyle.alignment = TextAnchor.MiddleCenter;
+            calibStyle.normal.textColor = Color.yellow;
+            GUI.Box(new Rect(Screen.width * 0.25f, 70, Screen.width * 0.5f, 45), calibrationMessage, calibStyle);
+        }
     }
 }
+
 
