@@ -39,6 +39,20 @@ public class GameManager : MonoBehaviour
     private int spawnedWallsCount = 0;
     private Coroutine countdownCoroutine;
 
+    void Awake()
+    {
+        Time.timeScale = 1.0f;
+
+        // UIクリック操作に必要なEventSystemの自動確認・生成（ボタンが押せない問題を根本防止）
+        if (FindObjectOfType<UnityEngine.EventSystems.EventSystem>() == null)
+        {
+            GameObject es = new GameObject("EventSystem");
+            es.AddComponent<UnityEngine.EventSystems.EventSystem>();
+            es.AddComponent<UnityEngine.EventSystems.StandaloneInputModule>();
+            Debug.Log("🎮 [GameManager] EventSystemを自動生成しました。");
+        }
+    }
+
     void Start()
     {
         // 音を鳴らすためのコンポーネントをアタッチ
@@ -51,15 +65,63 @@ public class GameManager : MonoBehaviour
             mainCam.gameObject.AddComponent<CameraController>();
         }
 
+        // wallPrefabsがInspectorで未設定の場合の自動救済
+        AutoLoadWallPrefabsIfEmpty();
+
         // 起動時はタイトル画面から開始
         ShowTitle();
     }
 
+    void AutoLoadWallPrefabsIfEmpty()
+    {
+#if UNITY_EDITOR
+        if (wallPrefabs == null || wallPrefabs.Length == 0)
+        {
+            string[] guids = UnityEditor.AssetDatabase.FindAssets("Wall_ t:Prefab", new[] { "Assets/Prefabs" });
+            if (guids.Length > 0)
+            {
+                var list = new System.Collections.Generic.List<GameObject>();
+                foreach (var g in guids)
+                {
+                    string p = UnityEditor.AssetDatabase.GUIDToAssetPath(g);
+                    var prefab = UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>(p);
+                    if (prefab != null) list.Add(prefab);
+                }
+                if (list.Count > 0)
+                {
+                    wallPrefabs = list.ToArray();
+                    Debug.Log($"📦 [GameManager] wallPrefabsをAssets/Prefabsから{wallPrefabs.Length}個自動読み込みしました！");
+                }
+            }
+        }
+#endif
+    }
+
     void Update()
     {
-        if (currentState != GameState.Playing) return;
-        if (wallPrefabs == null || wallPrefabs.Length == 0) return;
+        // --- タイトル画面でのキーボード操作（マウスが効かない・無い場合でも確実に開始可能） ---
+        if (currentState == GameState.Title)
+        {
+            if (Input.GetKeyDown(KeyCode.E) || Input.GetKeyDown(KeyCode.Alpha1))
+            {
+                SelectDifficultyEasy();
+                return;
+            }
+            if (Input.GetKeyDown(KeyCode.N) || Input.GetKeyDown(KeyCode.Alpha2) || Input.GetKeyDown(KeyCode.Space) || Input.GetKeyDown(KeyCode.Return))
+            {
+                SelectDifficultyNormal();
+                return;
+            }
+            if (Input.GetKeyDown(KeyCode.H) || Input.GetKeyDown(KeyCode.Alpha3))
+            {
+                SelectDifficultyHard();
+                return;
+            }
+        }
 
+        if (currentState != GameState.Playing) return;
+
+        // wallPrefabsが空でもSpawnWall内の動的フォールバックで生成を継続するためガードしない！
         timer += Time.deltaTime;
         if (timer >= spawnInterval && spawnedWallsCount < maxWalls)
         {
@@ -87,6 +149,7 @@ public class GameManager : MonoBehaviour
 
     public void SelectDifficultyEasy()
     {
+        Debug.Log("🎮 難易度【EASY】を選択しました！カウントダウンを開始します...");
         GameSettings.wallSpeed = 3.5f;
         GameSettings.wallSpawnInterval = 4.0f;
         StartCountdown();
@@ -94,6 +157,7 @@ public class GameManager : MonoBehaviour
 
     public void SelectDifficultyNormal()
     {
+        Debug.Log("🎮 難易度【NORMAL】を選択しました！カウントダウンを開始します...");
         GameSettings.wallSpeed = 5.0f;
         GameSettings.wallSpawnInterval = 3.0f;
         StartCountdown();
@@ -101,6 +165,7 @@ public class GameManager : MonoBehaviour
 
     public void SelectDifficultyHard()
     {
+        Debug.Log("🎮 難易度【HARD】を選択しました！カウントダウンを開始します...");
         GameSettings.wallSpeed = 7.5f;
         GameSettings.wallSpawnInterval = 2.0f;
         StartCountdown();
@@ -305,6 +370,15 @@ public class GameManager : MonoBehaviour
         if (titlePanel == null)
         {
             DrawFallbackGUI();
+        }
+        else if (currentState == GameState.Title)
+        {
+            // Canvas表示時でも画面下部にキーボード操作ガイドを表示（マウスが効かない場合の救済）
+            GUIStyle guideStyle = new GUIStyle(GUI.skin.box);
+            guideStyle.fontSize = 15;
+            guideStyle.alignment = TextAnchor.MiddleCenter;
+            guideStyle.normal.textColor = Color.yellow;
+            GUI.Box(new Rect(Screen.width * 0.1f, Screen.height - 40, Screen.width * 0.8f, 32), "⌨ キーボードでも選択可能: [1/E] Easy   [2/N/Space] Normal   [3/H] Hard   [C] キャリブレーション", guideStyle);
         }
     }
 
