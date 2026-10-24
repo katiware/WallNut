@@ -128,6 +128,10 @@ public class PlayerDummy : MonoBehaviour
     /// </summary>
     public void Calibrate()
     {
+        // 先にSlimeVR側の基準（トラッカー番号の割り当て・正面方向・基準回転）を確定し、人形をレスト姿勢に戻す
+        SlimeVRTestReceiver receiver = FindObjectOfType<SlimeVRTestReceiver>();
+        if (receiver != null) receiver.CalibrateTracking();
+
         if (spine != null)
         {
             calibratedSpineHeight = spine.position.y;

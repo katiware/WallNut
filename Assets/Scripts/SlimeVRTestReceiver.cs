@@ -6,21 +6,30 @@ using System.Threading;
 using System.Collections.Generic;
 
 /// <summary>
-/// SlimeVRおよびVRChat OSC形式のパケットを受信し、3Dキャラクターのボーンへ同期するレシーバー。
-/// - OSC Bundle ("#bundle") の完全対応（実機SlimeVRの一括パケットに対応）
-/// - 7点トラッキング完全対応（胸1点、両手握り2点、両膝2点、両足首2点 ※頭なし対応）
-/// - 位置(Position)と回転(Rotation)の双方をボーンへ正確に同期
-/// - 右手系(OpenVR/SlimeVR)から左手系(Unity)への座標軸変換
-/// - 画面上でのリアルタイム受信状態可視化HUD（ポート、受信数、各部位の受信ランプ）
+/// SlimeVR の OSC 出力を受信し、ダミーキャラクターのボーンへ同期するレシーバー。
+///
+/// 対応フォーマット:
+///  - SlimeVR「VRChat OSC」出力:  /tracking/trackers/{1..8}/position , /rotation (各 float×3, Unity座標/オイラー角[度])
+///                                 /tracking/trackers/head/position , /rotation
+///    → 部位名ではなく番号で届くため、キャリブレーション時に「高さ」と「左右」から自動で部位を割り当てる
+///  - 部位名入りアドレス (/.../chest/..., /.../leftfoot/... 等。SlimeVRMockSender もこの形式)
+///  - VMC (/VMC/Ext/Bone/Pos)
+///  - OSC Bundle (#bundle) の再帰展開
+///
+/// スレッド設計:
+///  - 受信スレッドは「パース → キュー投入」だけを行い、Unity API (Time.time 等) は一切呼ばない
+///  - ボーン更新・時刻記録はすべてメインスレッド (Update) で行う
+///
+/// 前提の装着構成 (計7点・頭なし): 胸1, 両手(握りこみ)2, 両膝2, 両足首2
 /// </summary>
 public class SlimeVRTestReceiver : MonoBehaviour
 {
-    private UdpClient udpClient;
-    private Thread receiveThread;
-    private bool isRunning = false;
+    public enum Role { Chest = 0, LeftHand, RightHand, LeftKnee, RightKnee, LeftFoot, RightFoot, Head }
+    private const int RoleCount = 8;
+    private static readonly string[] RoleLabels = { "胸", "左手", "右手", "左膝", "右膝", "左足", "右足", "頭" };
 
     [Header("通信設定")]
-    [Tooltip("SlimeVRがOSCを送信するポート。デフォルトは9000です")]
+    [Tooltip("SlimeVR の VRChat OSC「ポートアウト」と同じ番号にする (既定 9000)")]
     public int port = 9000;
 
     [Header("キャラクターのボーン（関節）割り当て（7点対応）")]
@@ -41,41 +50,76 @@ public class SlimeVRTestReceiver : MonoBehaviour
     [Tooltip("頭のTransform (任意・未装着でも動作可能)")]
     public Transform headBone;
 
+    [Header("トラッカー番号の割り当て (/tracking/trackers/N/)")]
+    [Tooltip("ON: キャリブレーション時に高さと左右から自動割り当て。OFF: 下の番号を使用")]
+    public bool autoAssignTrackerIds = true;
+    [Tooltip("手動割り当て時の番号 (-1 = 未使用)。順番: 胸, 左手, 右手, 左膝, 右膝, 左足, 右足")]
+    public int[] manualTrackerIds = { -1, -1, -1, -1, -1, -1, -1 };
+
     [Header("トラッキング補正")]
-    [Tooltip("しゃがみ時に胸の位置(Y座標)を反映するスケーリング係数")]
+    [Tooltip("胸の上下動 (しゃがみ) を人形に反映する倍率")]
     public float positionMultiplier = 1.0f;
-    [Tooltip("手の位置情報から腕の向きを直接計算する (握りこみトラッカーに最適)")]
+    [Tooltip("手の位置から腕の向きを計算する (握りこみトラッカー向け)")]
     public bool usePositionForArms = true;
+    [Tooltip("左右が鏡写しになる場合は 180 を入れる")]
+    public float facingYawOffset = 0f;
+    [Tooltip("胸トラッカーから見た肩の位置 (m)。X=左右幅, Y=高さ")]
+    public Vector2 shoulderOffsetFromChest = new Vector2(0.18f, 0.15f);
+    [Tooltip("この秒数データが来なければその部位は停止扱い")]
+    public float trackerTimeout = 1.0f;
+    [Tooltip("データ受信開始からこの秒数後に1回だけ自動キャリブレーション (0以下で無効)")]
+    public float autoCalibrateDelay = 2.0f;
 
     [Header("デバッグ表示")]
-    [Tooltip("受信したOSCデータをコンソールに表示する")]
     public bool showDebugLog = false;
-    [Tooltip("画面上に受信状況モニターHUDを表示する")]
+    [Tooltip("画面左下に受信モニターを表示")]
     public bool showMonitorHUD = true;
 
-    // 受信パケットの統計
+    // ---- 統計 (受信スレッドは Interlocked でカウントのみ) ----
+    private int packetCountThreadSafe = 0;
+    private int lastSeenPacketCount = 0;
     public int totalPacketsReceived = 0;
     public int totalMessagesProcessed = 0;
-    public float lastPacketTime = -1f;
-    public string lastReceivedAddress = "---";
+    public float lastPacketTime = -999f;
+    private float firstPacketTime = -1f;
+    private string bindError = null;
 
-    // 7部位の最終受信時刻（ランプ表示用）
-    private float lastChestTime = -1f;
-    private float lastLeftArmTime = -1f;
-    private float lastRightArmTime = -1f;
-    private float lastLeftKneeTime = -1f;
-    private float lastRightKneeTime = -1f;
-    private float lastLeftFootTime = -1f;
-    private float lastRightFootTime = -1f;
-    private float lastHeadTime = -1f;
+    // ---- トラッカー状態 ----
+    private class TrackerState
+    {
+        public Vector3 pos;
+        public Quaternion rot = Quaternion.identity;
+        public bool hasPos, hasRot;
+        public float lastTime = -999f;
+        public Quaternion calibRot = Quaternion.identity;
+    }
+    private readonly TrackerState[] roles = new TrackerState[RoleCount];
+    private readonly Dictionary<string, TrackerState> idTrackers = new Dictionary<string, TrackerState>();
+    private readonly Dictionary<string, Role> idToRole = new Dictionary<string, Role>();
 
-    // ボーンの初期位置（相対移動用）
-    private Vector3 chestInitialLocalPos = Vector3.zero;
-    private bool initialPositionsRecorded = false;
+    // ---- キャリブレーション ----
+    public bool trackingCalibrated = false;
+    private Quaternion facingYaw = Quaternion.identity;
+    private float calibChestY = 0f;
 
-    // メインスレッド（Update）で処理するためのキュー
-    private Queue<ParsedOscData> messageQueue = new Queue<ParsedOscData>();
-    private object queueLock = new object();
+    // ---- ボーンのレスト姿勢 (ルート空間) ----
+    private Transform rigRoot;
+    private readonly Quaternion[] restRot = new Quaternion[RoleCount];
+    private Vector3 chestRestLocalPos;
+    private bool restRecorded = false;
+
+    // ---- 受信スレッド ----
+    private UdpClient udpClient;
+    private Thread receiveThread;
+    private volatile bool isRunning = false;
+    private static UdpClient s_activeClient; // 再生停止し損ねたソケットの後始末用
+
+    private readonly Queue<ParsedOscData> messageQueue = new Queue<ParsedOscData>();
+    private readonly object queueLock = new object();
+
+    // ---- HUD用: 最近受信したアドレス ----
+    private readonly Dictionary<string, string> recentAddresses = new Dictionary<string, string>();
+    private readonly Dictionary<string, float> recentAddressTimes = new Dictionary<string, float>();
 
     public struct ParsedOscData
     {
@@ -84,12 +128,33 @@ public class SlimeVRTestReceiver : MonoBehaviour
         public List<string> strings;
     }
 
+    // =====================================================================
+    // Unity ライフサイクル
+    // =====================================================================
+    void Awake()
+    {
+        for (int i = 0; i < RoleCount; i++) roles[i] = new TrackerState();
+    }
+
     void Start()
     {
         AutoFindBonesIfEmpty();
-        RecordInitialPositions();
+        RecordRestPose();
         StartReceiving();
+#if UNITY_EDITOR
+        UnityEditor.AssemblyReloadEvents.beforeAssemblyReload += StopReceiving;
+#endif
     }
+
+    void OnDisable() { StopReceiving(); }
+    void OnDestroy()
+    {
+        StopReceiving();
+#if UNITY_EDITOR
+        UnityEditor.AssemblyReloadEvents.beforeAssemblyReload -= StopReceiving;
+#endif
+    }
+    void OnApplicationQuit() { StopReceiving(); }
 
     public void AutoFindBonesIfEmpty()
     {
@@ -104,497 +169,627 @@ public class SlimeVRTestReceiver : MonoBehaviour
             if (leftFootBone == null) leftFootBone = dummy.leftFootBone;
             if (rightFootBone == null) rightFootBone = dummy.rightFootBone;
             if (headBone == null) headBone = dummy.headBone;
+            rigRoot = dummy.transform;
         }
+        if (rigRoot == null && chestBone != null) rigRoot = chestBone.parent;
     }
 
-    private void RecordInitialPositions()
+    private Transform BoneOf(Role r)
     {
-        if (chestBone != null)
+        switch (r)
         {
-            chestInitialLocalPos = chestBone.localPosition;
-            initialPositionsRecorded = true;
+            case Role.Chest: return chestBone;
+            case Role.LeftHand: return leftArmBone;
+            case Role.RightHand: return rightArmBone;
+            case Role.LeftKnee: return leftKneeBone;
+            case Role.RightKnee: return rightKneeBone;
+            case Role.LeftFoot: return leftFootBone;
+            case Role.RightFoot: return rightFootBone;
+            case Role.Head: return headBone;
         }
+        return null;
+    }
+
+    private Quaternion RootRot => rigRoot != null ? rigRoot.rotation : Quaternion.identity;
+
+    private void RecordRestPose()
+    {
+        Quaternion invRoot = Quaternion.Inverse(RootRot);
+        for (int i = 0; i < RoleCount; i++)
+        {
+            Transform b = BoneOf((Role)i);
+            restRot[i] = b != null ? invRoot * b.rotation : Quaternion.identity;
+        }
+        if (chestBone != null) chestRestLocalPos = chestBone.localPosition;
+        restRecorded = true;
     }
 
     void Update()
     {
-        if (!initialPositionsRecorded && chestBone != null)
+        if (!restRecorded) RecordRestPose();
+
+        // 受信スレッドのカウンタをメインスレッドで時刻に変換
+        int count = Interlocked.CompareExchange(ref packetCountThreadSafe, 0, 0);
+        if (count != lastSeenPacketCount)
         {
-            RecordInitialPositions();
+            lastSeenPacketCount = count;
+            totalPacketsReceived = count;
+            lastPacketTime = Time.time;
+            if (firstPacketTime < 0f) firstPacketTime = Time.time;
         }
 
-        // メインスレッドでキューからデータを取り出してボーンを更新
+        // キューを吸い出してからロック外で処理
+        List<ParsedOscData> batch = null;
         lock (queueLock)
         {
-            while (messageQueue.Count > 0)
+            if (messageQueue.Count > 0)
             {
-                ParsedOscData data = messageQueue.Dequeue();
-                ProcessParsedData(data);
+                batch = new List<ParsedOscData>(messageQueue);
+                messageQueue.Clear();
             }
         }
+        if (batch != null)
+        {
+            foreach (var d in batch) ProcessParsedData(d);
+        }
+
+        CopyIdTrackersToRoles();
+
+        // 受信開始から少し待って1回だけ自動キャリブレーション (直立している前提)
+        if (!trackingCalibrated && autoCalibrateDelay > 0f && firstPacketTime >= 0f
+            && Time.time - firstPacketTime >= autoCalibrateDelay && HasAnyPositionData())
+        {
+            Debug.Log("[SlimeVR Receiver] 受信開始を検知したので自動キャリブレーションします (直立・腕を下ろした姿勢で)");
+            PlayerDummy dummy = FindObjectOfType<PlayerDummy>();
+            if (dummy != null) dummy.Calibrate(); // 内部で CalibrateTracking() が呼ばれる
+            else CalibrateTracking();
+        }
+
+        ApplyToRig();
     }
 
+    // =====================================================================
+    // メッセージ解釈 (メインスレッド)
+    // =====================================================================
     private void ProcessParsedData(ParsedOscData data)
     {
         totalMessagesProcessed++;
-        string addr = data.address.ToLower();
-        lastReceivedAddress = data.address;
         float now = Time.time;
+        RememberAddress(data, now);
 
-        // VMC (Virtual Motion Capture) 形式の処理: /VMC/Ext/Bone/Pos (boneName, px, py, pz, rx, ry, rz, rw)
-        if (addr.StartsWith("/vmc/ext/bone/pos") && data.strings.Count > 0 && data.floats.Count >= 7)
-        {
-            string boneName = data.strings[0].ToLower();
-            Vector3 pos = new Vector3(-data.floats[0], data.floats[1], data.floats[2]); // X軸反転（右手系→左手系）
-            Quaternion rot = new Quaternion(-data.floats[3], data.floats[4], -data.floats[5], data.floats[6]);
-            ApplyToBoneByName(boneName, pos, rot, now);
-            return;
-        }
+        string addr = data.address.ToLowerInvariant();
 
-        // 標準OSC / VRChat形式の解析
-        if (data.floats.Count == 0) return;
-
-        bool hasPos = false;
-        Vector3 position = Vector3.zero;
-        Quaternion rotation = Quaternion.identity;
-
-        if (data.floats.Count >= 7)
+        // --- 1. SlimeVR VRChat OSC 形式: /tracking/trackers/{id}/position|rotation ---
+        string[] parts = addr.Split('/');
+        if (parts.Length >= 5 && parts[1] == "tracking" && parts[2] == "trackers" && data.floats.Count >= 3)
         {
-            // VRChat OSC標準: [pos.x, pos.y, pos.z, rot.x, rot.y, rot.z, rot.w]
-            hasPos = true;
-            position = new Vector3(-data.floats[0], data.floats[1], data.floats[2]); // X軸反転
-            rotation = new Quaternion(-data.floats[3], data.floats[4], -data.floats[5], data.floats[6]);
-        }
-        else if (data.floats.Count == 6)
-        {
-            // 位置 + オイラー角: [pos.x, pos.y, pos.z, pitch, yaw, roll]
-            hasPos = true;
-            position = new Vector3(-data.floats[0], data.floats[1], data.floats[2]);
-            rotation = Quaternion.Euler(data.floats[3], -data.floats[4], -data.floats[5]);
-        }
-        else if (data.floats.Count == 4)
-        {
-            // クォータニオンのみ: [rot.x, rot.y, rot.z, rot.w]
-            rotation = new Quaternion(-data.floats[0], data.floats[1], -data.floats[2], data.floats[3]);
-        }
-        else if (data.floats.Count == 3)
-        {
-            // オイラー角または位置
-            if (addr.Contains("position") || addr.Contains("pos"))
+            string id = parts[3];
+            string kind = parts[4];
+            TrackerState st;
+            if (id == "head")
             {
-                hasPos = true;
-                position = new Vector3(-data.floats[0], data.floats[1], data.floats[2]);
+                st = roles[(int)Role.Head];
             }
             else
             {
-                rotation = Quaternion.Euler(data.floats[0], data.floats[1], data.floats[2]);
+                if (!idTrackers.TryGetValue(id, out st))
+                {
+                    st = new TrackerState();
+                    idTrackers[id] = st;
+                }
             }
+            Vector3 v = new Vector3(data.floats[0], data.floats[1], data.floats[2]);
+            if (kind.StartsWith("pos")) { st.pos = v; st.hasPos = true; }
+            else if (kind.StartsWith("rot")) { st.rot = Quaternion.Euler(v); st.hasRot = true; } // VRChat仕様: Unityのオイラー角(度)
+            st.lastTime = now;
+            return;
         }
 
-        if (showDebugLog)
+        // --- 2. VMC 形式: /VMC/Ext/Bone/Pos (name, px,py,pz, qx,qy,qz,qw) ※Unity座標系 ---
+        if (addr.StartsWith("/vmc/ext/bone/pos") && data.strings.Count > 0 && data.floats.Count >= 7)
         {
-            Debug.Log($"[OSC受信] {data.address} ({data.floats.Count}値) Rot:{rotation.eulerAngles:F1} Pos:{position:F2}");
+            Role? r = RoleFromVmcBone(data.strings[0].ToLowerInvariant());
+            if (r.HasValue)
+            {
+                TrackerState st = roles[(int)r.Value];
+                st.rot = new Quaternion(data.floats[3], data.floats[4], data.floats[5], data.floats[6]);
+                st.hasRot = true;
+                st.lastTime = now;
+            }
+            return;
         }
 
-        // --- 1. 胸 (Chest / Spine / Waist: 1点) ---
-        if (addr.Contains("chest") || addr.Contains("waist") || addr.Contains("spine") || addr.Contains("tracker/1") || addr.Contains("tracker/waist"))
+        // --- 3. 部位名入りアドレス (MockSender 等) ---
+        if (data.floats.Count == 0) return;
+        Role? role = RoleFromName(addr);
+        if (!role.HasValue) return;
+
+        TrackerState s = roles[(int)role.Value];
+        int n = data.floats.Count;
+        if (n >= 7)
         {
-            lastChestTime = now;
-            if (chestBone != null)
-            {
-                chestBone.localRotation = rotation;
-                if (hasPos)
-                {
-                    // 胸の上下動（しゃがみ）を初期位置からの変位として反映
-                    float yOffset = (position.y - 1.0f) * positionMultiplier;
-                    chestBone.localPosition = new Vector3(chestInitialLocalPos.x, chestInitialLocalPos.y + yOffset, chestInitialLocalPos.z);
-                }
-            }
+            s.pos = new Vector3(data.floats[0], data.floats[1], data.floats[2]); s.hasPos = true;
+            s.rot = new Quaternion(data.floats[3], data.floats[4], data.floats[5], data.floats[6]); s.hasRot = true;
         }
-        // --- 2. 左手 / 左腕 (Left Hand / Controller / Arm: 握りこみ) ---
-        else if (addr.Contains("left") && (addr.Contains("hand") || addr.Contains("controller") || addr.Contains("arm")))
+        else if (n == 6)
         {
-            lastLeftArmTime = now;
-            if (leftArmBone != null)
-            {
-                if (hasPos && usePositionForArms && chestBone != null)
-                {
-                    // 手の位置から腕の向きを計算して直感的に動かす
-                    Vector3 shoulderPos = leftArmBone.position;
-                    Vector3 targetWorldPos = transform.TransformPoint(position);
-                    Vector3 dir = (targetWorldPos - shoulderPos).normalized;
-                    if (dir.sqrMagnitude > 0.01f)
-                    {
-                        // 左腕は初期状態が-X方向なので、その方向へ合わせる
-                        leftArmBone.rotation = Quaternion.FromToRotation(Vector3.left, dir);
-                    }
-                }
-                else
-                {
-                    leftArmBone.localRotation = rotation;
-                }
-            }
+            s.pos = new Vector3(data.floats[0], data.floats[1], data.floats[2]); s.hasPos = true;
+            s.rot = Quaternion.Euler(data.floats[3], data.floats[4], data.floats[5]); s.hasRot = true;
         }
-        // --- 3. 右手 / 右腕 (Right Hand / Controller / Arm: 握りこみ) ---
-        else if (addr.Contains("right") && (addr.Contains("hand") || addr.Contains("controller") || addr.Contains("arm")))
+        else if (n == 4)
         {
-            lastRightArmTime = now;
-            if (rightArmBone != null)
-            {
-                if (hasPos && usePositionForArms && chestBone != null)
-                {
-                    Vector3 shoulderPos = rightArmBone.position;
-                    Vector3 targetWorldPos = transform.TransformPoint(position);
-                    Vector3 dir = (targetWorldPos - shoulderPos).normalized;
-                    if (dir.sqrMagnitude > 0.01f)
-                    {
-                        // 右腕は初期状態が+X方向
-                        rightArmBone.rotation = Quaternion.FromToRotation(Vector3.right, dir);
-                    }
-                }
-                else
-                {
-                    rightArmBone.localRotation = rotation;
-                }
-            }
+            s.rot = new Quaternion(data.floats[0], data.floats[1], data.floats[2], data.floats[3]); s.hasRot = true;
         }
-        // --- 4. 左膝 (Left Knee) ---
-        else if (addr.Contains("left") && addr.Contains("knee"))
+        else if (n == 3)
         {
-            lastLeftKneeTime = now;
-            if (leftKneeBone != null) leftKneeBone.localRotation = rotation;
-            else if (leftFootBone != null) leftFootBone.localRotation = rotation;
+            Vector3 v = new Vector3(data.floats[0], data.floats[1], data.floats[2]);
+            if (addr.Contains("position") || addr.EndsWith("/pos")) { s.pos = v; s.hasPos = true; }
+            else { s.rot = Quaternion.Euler(v); s.hasRot = true; }
         }
-        // --- 5. 右膝 (Right Knee) ---
-        else if (addr.Contains("right") && addr.Contains("knee"))
+        s.lastTime = now;
+
+        if (showDebugLog) Debug.Log($"[OSC] {data.address} -> {role.Value}");
+    }
+
+    private static Role? RoleFromName(string addr)
+    {
+        bool left = addr.Contains("left");
+        bool right = addr.Contains("right");
+        if (addr.Contains("chest") || addr.Contains("waist") || addr.Contains("spine") || addr.Contains("hip")) return Role.Chest;
+        if (addr.Contains("knee")) return left ? Role.LeftKnee : right ? Role.RightKnee : (Role?)null;
+        if (addr.Contains("foot") || addr.Contains("ankle")) return left ? Role.LeftFoot : right ? Role.RightFoot : (Role?)null;
+        if (addr.Contains("hand") || addr.Contains("controller") || addr.Contains("arm")) return left ? Role.LeftHand : right ? Role.RightHand : (Role?)null;
+        if (addr.Contains("head")) return Role.Head;
+        return null;
+    }
+
+    private static Role? RoleFromVmcBone(string b)
+    {
+        if (b == "chest" || b == "upperchest" || b == "spine") return Role.Chest;
+        if (b == "leftupperarm") return Role.LeftHand;
+        if (b == "rightupperarm") return Role.RightHand;
+        if (b == "leftupperleg") return Role.LeftKnee;
+        if (b == "rightupperleg") return Role.RightKnee;
+        if (b == "leftlowerleg") return Role.LeftFoot;
+        if (b == "rightlowerleg") return Role.RightFoot;
+        if (b == "head") return Role.Head;
+        return null;
+    }
+
+    private void CopyIdTrackersToRoles()
+    {
+        foreach (var kv in idToRole)
         {
-            lastRightKneeTime = now;
-            if (rightKneeBone != null) rightKneeBone.localRotation = rotation;
-            else if (rightFootBone != null) rightFootBone.localRotation = rotation;
-        }
-        // --- 6. 左足 / 左足首 (Left Foot / Ankle) ---
-        else if (addr.Contains("left") && (addr.Contains("foot") || addr.Contains("ankle")))
-        {
-            lastLeftFootTime = now;
-            if (leftFootBone != null) leftFootBone.localRotation = rotation;
-        }
-        // --- 7. 右足 / 右足首 (Right Foot / Ankle) ---
-        else if (addr.Contains("right") && (addr.Contains("foot") || addr.Contains("ankle")))
-        {
-            lastRightFootTime = now;
-            if (rightFootBone != null) rightFootBone.localRotation = rotation;
-        }
-        // --- 8. 頭 (Head: 任意・未装着でも無害) ---
-        else if (addr.Contains("head"))
-        {
-            lastHeadTime = now;
-            if (headBone != null) headBone.localRotation = rotation;
+            if (!idTrackers.TryGetValue(kv.Key, out TrackerState src)) continue;
+            TrackerState dst = roles[(int)kv.Value];
+            dst.pos = src.pos; dst.hasPos = src.hasPos;
+            dst.rot = src.rot; dst.hasRot = src.hasRot;
+            dst.lastTime = src.lastTime;
         }
     }
 
-    private void ApplyToBoneByName(string boneName, Vector3 pos, Quaternion rot, float now)
+    private bool Recent(TrackerState s) => Time.time - s.lastTime < trackerTimeout;
+
+    private bool HasAnyPositionData()
     {
-        if (boneName.Contains("chest") || boneName.Contains("spine") || boneName.Contains("hips"))
-        {
-            lastChestTime = now;
-            if (chestBone != null) { chestBone.localRotation = rot; }
-        }
-        else if (boneName.Contains("lefthand") || boneName.Contains("leftwrist") || boneName.Contains("leftlowerarm"))
-        {
-            lastLeftArmTime = now;
-            if (leftArmBone != null) { leftArmBone.localRotation = rot; }
-        }
-        else if (boneName.Contains("righthand") || boneName.Contains("rightwrist") || boneName.Contains("rightlowerarm"))
-        {
-            lastRightArmTime = now;
-            if (rightArmBone != null) { rightArmBone.localRotation = rot; }
-        }
-        else if (boneName.Contains("leftlowerleg") || boneName.Contains("leftknee"))
-        {
-            lastLeftKneeTime = now;
-            if (leftKneeBone != null) { leftKneeBone.localRotation = rot; }
-        }
-        else if (boneName.Contains("rightlowerleg") || boneName.Contains("rightknee"))
-        {
-            lastRightKneeTime = now;
-            if (rightKneeBone != null) { rightKneeBone.localRotation = rot; }
-        }
-        else if (boneName.Contains("leftfoot"))
-        {
-            lastLeftFootTime = now;
-            if (leftFootBone != null) { leftFootBone.localRotation = rot; }
-        }
-        else if (boneName.Contains("rightfoot"))
-        {
-            lastRightFootTime = now;
-            if (rightFootBone != null) { rightFootBone.localRotation = rot; }
-        }
-        else if (boneName.Contains("head"))
-        {
-            lastHeadTime = now;
-            if (headBone != null) { headBone.localRotation = rot; }
-        }
+        foreach (var kv in idTrackers) if (kv.Value.hasPos && Recent(kv.Value)) return true;
+        return roles[(int)Role.Chest].hasPos && Recent(roles[(int)Role.Chest]);
     }
 
-    private void StartReceiving()
+    // =====================================================================
+    // キャリブレーション
+    // =====================================================================
+    /// <summary>
+    /// 直立・腕を下ろした姿勢で呼ぶ。トラッカー番号の自動割り当て、正面方向、各部位の基準回転を記録する。
+    /// PlayerDummy.Calibrate() から呼ばれる。
+    /// </summary>
+    public void CalibrateTracking()
     {
-        try
+        if (!restRecorded) { AutoFindBonesIfEmpty(); RecordRestPose(); }
+        if (autoAssignTrackerIds) AutoAssignTrackerIds();
+        else ApplyManualTrackerIds();
+        CopyIdTrackersToRoles();
+
+        TrackerState chest = roles[(int)Role.Chest];
+        if (!Recent(chest))
         {
-            udpClient = new UdpClient(port);
-            isRunning = true;
-            receiveThread = new Thread(ReceiveData);
-            receiveThread.IsBackground = true;
-            receiveThread.Start();
-            Debug.Log($"📡 [SlimeVR Receiver] ポート {port} でOSCデータの受信待機を開始しました。(#bundle対応済)");
+            Debug.LogWarning("[SlimeVR Receiver] 胸トラッカーのデータが無いためキャリブレーションできません。SlimeVR の VRChat OSC 設定で胸(Chest)が有効か確認してください。");
+            return;
         }
-        catch (System.Exception e)
+
+        facingYaw = (chest.hasRot ? YawOnly(chest.rot) : Quaternion.identity) * Quaternion.Euler(0f, facingYawOffset, 0f);
+        if (chest.hasPos) calibChestY = chest.pos.y;
+
+        for (int i = 0; i < RoleCount; i++)
         {
-            Debug.LogError($"❌ [SlimeVR Receiver] ポート {port} のバインドに失敗しました。\n{e.Message}");
+            if (roles[i].hasRot) roles[i].calibRot = roles[i].rot;
         }
+
+        trackingCalibrated = true;
+        ApplyToRig(); // 人形をレスト姿勢に戻した状態で PlayerDummy に基準を記録させる
+        Debug.Log($"[SlimeVR Receiver] キャリブレーション完了: 割り当て {DescribeMapping()}");
     }
 
-    private void ReceiveData()
+    private static Quaternion YawOnly(Quaternion q)
     {
-        IPEndPoint anyIP = new IPEndPoint(IPAddress.Any, 0);
-        while (isRunning)
+        Vector3 f = q * Vector3.forward;
+        f.y = 0f;
+        if (f.sqrMagnitude < 1e-4f) return Quaternion.identity;
+        return Quaternion.LookRotation(f.normalized, Vector3.up);
+    }
+
+    private void ApplyManualTrackerIds()
+    {
+        idToRole.Clear();
+        for (int i = 0; i < manualTrackerIds.Length && i < 7; i++)
         {
-            try
-            {
-                byte[] data = udpClient.Receive(ref anyIP);
-                totalPacketsReceived++;
-                lastPacketTime = Time.time;
-                ParseIncomingPacket(data, 0, data.Length);
-            }
-            catch (SocketException) { /* 終了時の例外は無視 */ }
-            catch (System.Exception e) { Debug.LogWarning(e.ToString()); }
+            if (manualTrackerIds[i] >= 0) idToRole[manualTrackerIds[i].ToString()] = (Role)i;
         }
     }
 
     /// <summary>
-    /// パケットが OSC Bundle ("#bundle") か単体 OSC Message かを判定して処理
+    /// 番号でしか届かないトラッカーを、高さ（胸=最上段 / 手=中段上 / 膝=中段下 / 足=最下段）と
+    /// 胸から見た左右位置で自動的に部位へ割り当てる。
     /// </summary>
-    private void ParseIncomingPacket(byte[] data, int offset, int length)
+    private void AutoAssignTrackerIds()
     {
-        if (data == null || length < 4) return;
-
-        // 1. OSC Bundle ("#bundle") か判定
-        if (data[offset] == '#' && length >= 16)
+        var list = new List<KeyValuePair<string, TrackerState>>();
+        foreach (var kv in idTrackers)
         {
-            string header = Encoding.ASCII.GetString(data, offset, 7);
-            if (header == "#bundle")
+            if (kv.Value.hasPos && Recent(kv.Value)) list.Add(kv);
+        }
+        if (list.Count == 0) return;
+
+        idToRole.Clear();
+        list.Sort((a, b) => b.Value.pos.y.CompareTo(a.Value.pos.y)); // 高い順
+
+        var chest = list[0];
+        idToRole[chest.Key] = Role.Chest;
+        Quaternion yaw = (chest.Value.hasRot ? YawOnly(chest.Value.rot) : Quaternion.identity) * Quaternion.Euler(0f, facingYawOffset, 0f);
+        Quaternion yawInv = Quaternion.Inverse(yaw);
+
+        float floorY = list[list.Count - 1].Value.pos.y;
+        float h = Mathf.Max(0.3f, chest.Value.pos.y - floorY);
+
+        var hands = new List<KeyValuePair<string, float>>();
+        var knees = new List<KeyValuePair<string, float>>();
+        var feet = new List<KeyValuePair<string, float>>();
+
+        for (int i = 1; i < list.Count; i++)
+        {
+            Vector3 p = list[i].Value.pos;
+            float t = (p.y - floorY) / h;                               // 0=床, 1=胸
+            float lateral = (yawInv * (p - chest.Value.pos)).x;         // -:左, +:右
+            var item = new KeyValuePair<string, float>(list[i].Key, lateral);
+            if (t < 0.15f) feet.Add(item);
+            else if (t < 0.48f) knees.Add(item);
+            else hands.Add(item);
+        }
+
+        AssignPair(hands, Role.LeftHand, Role.RightHand);
+        AssignPair(knees, Role.LeftKnee, Role.RightKnee);
+        AssignPair(feet, Role.LeftFoot, Role.RightFoot);
+    }
+
+    private void AssignPair(List<KeyValuePair<string, float>> items, Role leftRole, Role rightRole)
+    {
+        if (items.Count == 0) return;
+        items.Sort((a, b) => a.Value.CompareTo(b.Value));
+        if (items.Count == 1)
+        {
+            idToRole[items[0].Key] = items[0].Value < 0f ? leftRole : rightRole;
+            return;
+        }
+        idToRole[items[0].Key] = leftRole;
+        idToRole[items[items.Count - 1].Key] = rightRole;
+    }
+
+    private string DescribeMapping()
+    {
+        if (idToRole.Count == 0) return "(番号割り当てなし)";
+        var sb = new StringBuilder();
+        foreach (var kv in idToRole) sb.Append($"#{kv.Key}={RoleLabels[(int)kv.Value]} ");
+        return sb.ToString();
+    }
+
+    // =====================================================================
+    // ボーンへの反映 (メインスレッド・毎フレーム)
+    // =====================================================================
+    private Quaternion ToRigSpace(Quaternion worldDelta)
+    {
+        Quaternion inv = Quaternion.Inverse(facingYaw);
+        return inv * worldDelta * facingYaw;
+    }
+
+    private void ApplyRotation(Role r)
+    {
+        Transform bone = BoneOf(r);
+        TrackerState s = roles[(int)r];
+        if (bone == null || !s.hasRot || !Recent(s)) return;
+        Quaternion delta = s.rot * Quaternion.Inverse(s.calibRot);
+        bone.rotation = RootRot * ToRigSpace(delta) * restRot[(int)r];
+    }
+
+    private void ApplyArm(Role r, Vector3 restDir, float shoulderSide)
+    {
+        Transform bone = BoneOf(r);
+        TrackerState hand = roles[(int)r];
+        TrackerState chest = roles[(int)Role.Chest];
+        if (bone == null || !Recent(hand)) return;
+
+        if (usePositionForArms && hand.hasPos && chest.hasPos && Recent(chest))
+        {
+            Vector3 rel = Quaternion.Inverse(facingYaw) * (hand.pos - chest.pos);
+            Vector3 shoulder = new Vector3(shoulderSide * shoulderOffsetFromChest.x, shoulderOffsetFromChest.y, 0f);
+            Vector3 dir = rel - shoulder;
+            if (dir.sqrMagnitude > 0.0025f)
             {
-                ParseOscBundle(data, offset, length);
+                bone.rotation = RootRot * Quaternion.FromToRotation(restDir, dir.normalized) * restRot[(int)r];
                 return;
             }
         }
-
-        // 2. 単体 OSC Message として処理
-        ParseOscMessage(data, offset, length);
+        ApplyRotation(r);
     }
 
-    /// <summary>
-    /// OSC Bundle ("#bundle") の再帰パース
-    /// 構造: "#bundle\0" (8 bytes) + TimeTag (8 bytes) + 各要素 [Size(4 bytes) + Content] の繰り返し
-    /// </summary>
-    private void ParseOscBundle(byte[] data, int offset, int length)
+    private void ApplyToRig()
     {
-        int index = offset + 16; // "#bundle\0" (8B) + TimeTag (8B) をスキップ
-        int end = offset + length;
-
-        while (index + 4 <= end)
+        if (!restRecorded) return;
+        // 胸: 回転 + 上下動 (しゃがみ)
+        TrackerState chest = roles[(int)Role.Chest];
+        if (chestBone != null && Recent(chest))
         {
-            // 各要素のサイズ (int32, Big-Endian)
-            int elementSize = ReadInt32BigEndian(data, ref index);
-            if (elementSize <= 0 || index + elementSize > end) break;
-
-            // 要素を再帰的にパース（Bundleの中にBundleが含まれるケースも対応）
-            ParseIncomingPacket(data, index, elementSize);
-            index += elementSize;
+            ApplyRotation(Role.Chest);
+            if (chest.hasPos && trackingCalibrated)
+            {
+                float dy = (chest.pos.y - calibChestY) * positionMultiplier;
+                chestBone.localPosition = chestRestLocalPos + Vector3.up * dy;
+            }
         }
+
+        // 両手: 胸から見た手の位置で腕の向きを決める
+        ApplyArm(Role.LeftHand, Vector3.left, -1f);
+        ApplyArm(Role.RightHand, Vector3.right, 1f);
+
+        // 膝・足首・頭: キャリブレーション時からの回転差分
+        ApplyRotation(Role.LeftKnee);
+        ApplyRotation(Role.RightKnee);
+        ApplyRotation(Role.LeftFoot);
+        ApplyRotation(Role.RightFoot);
+        ApplyRotation(Role.Head);
     }
 
-    /// <summary>
-    /// 単体 OSC Message のパース
-    /// 構造: Address (null終端+4Bパディング) + TypeTag (null終端+4Bパディング) + 引数群
-    /// </summary>
-    private void ParseOscMessage(byte[] data, int offset, int length)
+    // =====================================================================
+    // UDP 受信 (バックグラウンドスレッド: Unity API 呼び出し禁止)
+    // =====================================================================
+    private void StartReceiving()
     {
+        StopReceiving();
+
+        // 前回の再生で閉じ損ねたソケットがあれば閉じる
+        if (s_activeClient != null)
+        {
+            try { s_activeClient.Close(); } catch { }
+            s_activeClient = null;
+        }
+
         try
         {
-            int index = offset;
-            int end = offset + length;
+            udpClient = new UdpClient();
+            udpClient.ExclusiveAddressUse = false;
+            udpClient.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+            udpClient.Client.Bind(new IPEndPoint(IPAddress.Any, port));
+            s_activeClient = udpClient;
+            bindError = null;
 
-            // 1. アドレスの読み取り
-            string address = ReadOscString(data, ref index, end);
-            if (string.IsNullOrEmpty(address) || !address.StartsWith("/")) return;
-
-            // 2. 型タグの読み取り (例: ",ffff" or ",sfffffff")
-            string typeTag = ReadOscString(data, ref index, end);
-            if (string.IsNullOrEmpty(typeTag) || !typeTag.StartsWith(",")) return;
-
-            // 3. 引数の読み取り
-            List<float> floats = new List<float>();
-            List<string> strings = new List<string>();
-
-            for (int i = 1; i < typeTag.Length; i++)
-            {
-                char tag = typeTag[i];
-                if (tag == 'f')
-                {
-                    floats.Add(ReadFloatBigEndian(data, ref index, end));
-                }
-                else if (tag == 'i')
-                {
-                    floats.Add((float)ReadInt32BigEndian(data, ref index));
-                }
-                else if (tag == 's')
-                {
-                    strings.Add(ReadOscString(data, ref index, end));
-                }
-                else if (tag == 'd') // double
-                {
-                    if (index + 8 <= end)
-                    {
-                        byte[] dBytes = new byte[8];
-                        for (int b = 0; b < 8; b++) dBytes[b] = data[index + (7 - b)];
-                        floats.Add((float)System.BitConverter.ToDouble(dBytes, 0));
-                        index += 8;
-                    }
-                }
-                else if (tag == 'T') // True
-                {
-                    floats.Add(1f);
-                }
-                else if (tag == 'F') // False
-                {
-                    floats.Add(0f);
-                }
-                else
-                {
-                    // 未知の型は4バイト進めてスキップ
-                    index += 4;
-                }
-            }
-
-            lock (queueLock)
-            {
-                messageQueue.Enqueue(new ParsedOscData
-                {
-                    address = address,
-                    floats = floats,
-                    strings = strings
-                });
-            }
+            isRunning = true;
+            receiveThread = new Thread(ReceiveLoop) { IsBackground = true, Name = "SlimeVR OSC Receiver" };
+            receiveThread.Start();
+            Debug.Log($"[SlimeVR Receiver] ポート {port} で受信待機を開始しました。");
         }
         catch (System.Exception e)
         {
-            if (showDebugLog) Debug.LogWarning($"[OSC Message Parse Error] {e.Message}");
+            bindError = e.Message;
+            Debug.LogError($"[SlimeVR Receiver] ポート {port} のバインドに失敗しました。\n{e.Message}\n" +
+                           "→ 他のアプリ(VRChat等)が同じポートを使っていないか、Unity を一度再起動して閉じ損ねたソケットを解放してください。");
+            try { udpClient?.Close(); } catch { }
+            udpClient = null;
         }
     }
 
-    private string ReadOscString(byte[] data, ref int index, int end)
+    private void StopReceiving()
+    {
+        isRunning = false;
+        if (udpClient != null)
+        {
+            try { udpClient.Close(); } catch { }
+            if (s_activeClient == udpClient) s_activeClient = null;
+            udpClient = null;
+        }
+        if (receiveThread != null && receiveThread.IsAlive) receiveThread.Join(300);
+        receiveThread = null;
+    }
+
+    private void ReceiveLoop()
+    {
+        IPEndPoint anyIP = new IPEndPoint(IPAddress.Any, 0);
+        UdpClient client = udpClient;
+        while (isRunning && client != null)
+        {
+            try
+            {
+                byte[] data = client.Receive(ref anyIP);
+                Interlocked.Increment(ref packetCountThreadSafe);
+                ParseIncomingPacket(data, 0, data.Length);
+            }
+            catch (SocketException) { if (!isRunning) break; }
+            catch (System.ObjectDisposedException) { break; }
+            catch (System.Exception) { /* 不正パケットは無視して受信継続 */ }
+        }
+    }
+
+    private void ParseIncomingPacket(byte[] data, int offset, int length)
+    {
+        if (data == null || length < 4 || offset + length > data.Length) return;
+
+        if (length >= 16 && data[offset] == (byte)'#'
+            && Encoding.ASCII.GetString(data, offset, 7) == "#bundle")
+        {
+            // "#bundle\0"(8) + TimeTag(8) + [size(4) + element]...
+            int index = offset + 16;
+            int end = offset + length;
+            while (index + 4 <= end)
+            {
+                int size = ReadInt32BigEndian(data, ref index, end);
+                if (size <= 0 || index + size > end) break;
+                ParseIncomingPacket(data, index, size);
+                index += size;
+            }
+            return;
+        }
+
+        ParseOscMessage(data, offset, length);
+    }
+
+    private void ParseOscMessage(byte[] data, int offset, int length)
+    {
+        int index = offset;
+        int end = offset + length;
+
+        string address = ReadOscString(data, ref index, end);
+        if (string.IsNullOrEmpty(address) || address[0] != '/') return;
+
+        string typeTag = ReadOscString(data, ref index, end);
+        if (string.IsNullOrEmpty(typeTag) || typeTag[0] != ',') return;
+
+        var floats = new List<float>();
+        var strings = new List<string>();
+        for (int i = 1; i < typeTag.Length; i++)
+        {
+            switch (typeTag[i])
+            {
+                case 'f': floats.Add(ReadFloatBigEndian(data, ref index, end)); break;
+                case 'i': floats.Add(ReadInt32BigEndian(data, ref index, end)); break;
+                case 's': strings.Add(ReadOscString(data, ref index, end)); break;
+                case 'd':
+                    if (index + 8 <= end)
+                    {
+                        byte[] b = new byte[8];
+                        for (int k = 0; k < 8; k++) b[k] = data[index + 7 - k];
+                        floats.Add((float)System.BitConverter.ToDouble(b, 0));
+                    }
+                    index += 8;
+                    break;
+                case 'T': floats.Add(1f); break;
+                case 'F': floats.Add(0f); break;
+                case 'N': case 'I': break;
+                default: index += 4; break;
+            }
+        }
+
+        lock (queueLock)
+        {
+            // メインスレッドが止まっている間に溜まり過ぎないよう上限を設ける
+            if (messageQueue.Count > 4000) messageQueue.Clear();
+            messageQueue.Enqueue(new ParsedOscData { address = address, floats = floats, strings = strings });
+        }
+    }
+
+    private static string ReadOscString(byte[] data, ref int index, int end)
     {
         if (index >= end) return string.Empty;
         int start = index;
         while (index < end && data[index] != 0) index++;
-
-        string str = Encoding.ASCII.GetString(data, start, index - start);
-        index++; // null文字
-
-        // 4バイト境界アライメント
-        int padding = (4 - ((index - start) % 4)) % 4;
-        index += padding;
-        return str;
+        string s = Encoding.ASCII.GetString(data, start, index - start);
+        index++; // null終端
+        index += (4 - ((index - start) % 4)) % 4; // 4バイト境界
+        return s;
     }
 
-    private float ReadFloatBigEndian(byte[] data, ref int index, int end)
+    private static float ReadFloatBigEndian(byte[] data, ref int index, int end)
     {
-        if (index + 4 > end) return 0f;
-
-        byte[] bytes = new byte[4];
-        bytes[0] = data[index + 3];
-        bytes[1] = data[index + 2];
-        bytes[2] = data[index + 1];
-        bytes[3] = data[index + 0];
-
-        float value = System.BitConverter.ToSingle(bytes, 0);
+        if (index + 4 > end) { index += 4; return 0f; }
+        byte[] b = { data[index + 3], data[index + 2], data[index + 1], data[index] };
         index += 4;
-        return value;
+        return System.BitConverter.ToSingle(b, 0);
     }
 
-    private int ReadInt32BigEndian(byte[] data, ref int index)
+    private static int ReadInt32BigEndian(byte[] data, ref int index, int end)
     {
-        if (index + 4 > data.Length) return 0;
-
-        int value = (data[index] << 24) | (data[index + 1] << 16) | (data[index + 2] << 8) | data[index + 3];
+        if (index + 4 > end) { index += 4; return 0; }
+        int v = (data[index] << 24) | (data[index + 1] << 16) | (data[index + 2] << 8) | data[index + 3];
         index += 4;
-        return value;
+        return v;
+    }
+
+    // =====================================================================
+    // 受信モニター HUD
+    // =====================================================================
+    private void RememberAddress(ParsedOscData d, float now)
+    {
+        if (!recentAddresses.ContainsKey(d.address) && recentAddresses.Count >= 24) return;
+        var sb = new StringBuilder();
+        for (int i = 0; i < d.floats.Count && i < 4; i++) sb.Append(d.floats[i].ToString("F2")).Append(' ');
+        if (d.strings.Count > 0) sb.Insert(0, d.strings[0] + " ");
+        recentAddresses[d.address] = sb.ToString();
+        recentAddressTimes[d.address] = now;
     }
 
     void OnGUI()
     {
         if (!showMonitorHUD) return;
 
-        // 画面左下にSlimeVR受信モニターを半透明ボックスで常時表示
-        float w = 260;
-        float h = 185;
-        float x = 10;
-        float y = Screen.height - h - 10;
-
-        GUI.Box(new Rect(x, y, w, h), "📡 SlimeVR 受信モニター");
+        float w = 380f, h = 330f;
+        float x = 10f, y = Screen.height - h - 10f;
+        GUI.Box(new Rect(x, y, w, h), "SlimeVR 受信モニター");
+        GUILayout.BeginArea(new Rect(x + 10f, y + 22f, w - 20f, h - 28f));
 
         float now = Time.time;
-        bool isReceiving = (now - lastPacketTime) < 1.0f && totalPacketsReceived > 0;
+        bool receiving = totalPacketsReceived > 0 && now - lastPacketTime < 1.0f;
 
-        GUILayout.BeginArea(new Rect(x + 10, y + 25, w - 20, h - 30));
-
-        // 通信ステータス
-        GUIStyle statusStyle = new GUIStyle(GUI.skin.label);
-        statusStyle.fontStyle = FontStyle.Bold;
-        statusStyle.normal.textColor = isReceiving ? Color.green : Color.red;
-        GUILayout.Label($"ポート {port}: {(isReceiving ? "受信中 ● (OK)" : "待機中 / 停止中 ○")}", statusStyle);
-
-        GUILayout.Label($"パケット数: {totalPacketsReceived} 件 ({totalMessagesProcessed} メッセージ)");
-
-        // 7部位の受信ランプ表示
-        GUILayout.Space(3);
-        GUILayout.Label("【7点トラッカー受信状態】");
-
-        GUILayout.BeginHorizontal();
-        DrawTrackerLamp("胸", (now - lastChestTime) < 1.5f);
-        DrawTrackerLamp("左手", (now - lastLeftArmTime) < 1.5f);
-        DrawTrackerLamp("右手", (now - lastRightArmTime) < 1.5f);
-        GUILayout.EndHorizontal();
+        var status = new GUIStyle(GUI.skin.label) { fontStyle = FontStyle.Bold };
+        if (bindError != null)
+        {
+            status.normal.textColor = Color.red;
+            GUILayout.Label($"ポート {port}: バインド失敗 (Unity再起動 or ポート競合)", status);
+        }
+        else
+        {
+            status.normal.textColor = receiving ? Color.green : Color.yellow;
+            GUILayout.Label($"ポート {port}: {(receiving ? "受信中 ●" : "待機中 ○ (データ未着)")}", status);
+        }
+        GUILayout.Label($"パケット {totalPacketsReceived} / メッセージ {totalMessagesProcessed} / キャリブ {(trackingCalibrated ? "済" : "未")} [C]");
 
         GUILayout.BeginHorizontal();
-        DrawTrackerLamp("左膝", (now - lastLeftKneeTime) < 1.5f);
-        DrawTrackerLamp("右膝", (now - lastRightKneeTime) < 1.5f);
-        DrawTrackerLamp("左足", (now - lastLeftFootTime) < 1.5f);
-        DrawTrackerLamp("右足", (now - lastRightFootTime) < 1.5f);
+        for (int i = 0; i < 4; i++) Lamp(i);
+        GUILayout.EndHorizontal();
+        GUILayout.BeginHorizontal();
+        for (int i = 4; i < 7; i++) Lamp(i);
         GUILayout.EndHorizontal();
 
-        GUILayout.Space(3);
-        GUIStyle addrStyle = new GUIStyle(GUI.skin.label);
-        addrStyle.fontSize = 10;
-        addrStyle.normal.textColor = Color.gray;
-        string shortAddr = lastReceivedAddress.Length > 32 ? "..." + lastReceivedAddress.Substring(lastReceivedAddress.Length - 29) : lastReceivedAddress;
-        GUILayout.Label($"最新: {shortAddr}", addrStyle);
+        if (idTrackers.Count > 0)
+            GUILayout.Label($"番号割り当て: {DescribeMapping()}");
+
+        var small = new GUIStyle(GUI.skin.label) { fontSize = 10 };
+        small.normal.textColor = new Color(0.8f, 0.8f, 0.8f);
+        GUILayout.Label("受信アドレス (直近):", small);
+        int shown = 0;
+        foreach (var kv in recentAddresses)
+        {
+            if (shown >= 10) break;
+            if (now - recentAddressTimes[kv.Key] > 3f) continue;
+            GUILayout.Label($"{kv.Key}  {kv.Value}", small);
+            shown++;
+        }
+        if (shown == 0) GUILayout.Label("(なし)", small);
 
         GUILayout.EndArea();
     }
 
-    private void DrawTrackerLamp(string label, bool active)
+    private void Lamp(int i)
     {
-        GUIStyle lampStyle = new GUIStyle(GUI.skin.label);
-        lampStyle.normal.textColor = active ? Color.green : Color.gray;
-        GUILayout.Label($"{(active ? "🟢" : "⚪")}{label} ", lampStyle);
-    }
-
-    void OnDestroy()
-    {
-        isRunning = false;
-        if (udpClient != null) udpClient.Close();
-        if (receiveThread != null && receiveThread.IsAlive) receiveThread.Join(500);
+        bool active = roles[i] != null && Recent(roles[i]);
+        var st = new GUIStyle(GUI.skin.label);
+        st.normal.textColor = active ? Color.green : Color.gray;
+        GUILayout.Label($"{(active ? "●" : "○")}{RoleLabels[i]}", st, GUILayout.Width(80));
     }
 }
-
