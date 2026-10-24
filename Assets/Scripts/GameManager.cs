@@ -44,6 +44,13 @@ public class GameManager : MonoBehaviour
         // 音を鳴らすためのコンポーネントをアタッチ
         audioSource = gameObject.AddComponent<AudioSource>();
 
+        // カメラが未設定の場合は自動でCameraControllerをアタッチして最適位置に固定
+        Camera mainCam = Camera.main;
+        if (mainCam != null && mainCam.GetComponent<CameraController>() == null)
+        {
+            mainCam.gameObject.AddComponent<CameraController>();
+        }
+
         // 起動時はタイトル画面から開始
         ShowTitle();
     }
